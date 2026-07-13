@@ -1,0 +1,4 @@
+# 2026-07-10 修改原因：板端 ROS2 运行时可能缺少 spdlog/fmt/tinyxml2/OpenSSL；本包把最小补库安装到包内 lib 目录。
+if [ -d "$AMENT_CURRENT_PREFIX/lib/@PROJECT_NAME@" ]; then
+  ament_prepend_unique_value LD_LIBRARY_PATH "$AMENT_CURRENT_PREFIX/lib/@PROJECT_NAME@"
+fi
