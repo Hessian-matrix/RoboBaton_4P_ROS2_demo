@@ -1,23 +1,24 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
-
-#include "robobaton_4p_ros2_demo/icm42688_driver.h"
 
 namespace robobaton_4p_ros2_demo {
 
 class ImuPublisher {
  public:
   struct Config {
-    icm42688_x5::DriverConfig driver_config;
+    uint32_t sample_rate_hz = 1000U;
+    uint32_t fifo_watermark_samples = 8U;
+    bool direct_read = false;
     std::string frame_id = "robobaton_imu_link";
     bool publish_temperature = true;
   };
 
-  // 2026-07-09 修改原因：IMU 发布模块独立管理驱动生命周期，便于和相机模块分别启停。
+  // 2026-07-15 修改原因：发布器独占一个 ICM C handle，关闭后禁止同进程重启。
   ImuPublisher(rclcpp::Node* node, Config config);
   ~ImuPublisher();
 

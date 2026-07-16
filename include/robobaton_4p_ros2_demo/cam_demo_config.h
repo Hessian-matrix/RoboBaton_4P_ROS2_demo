@@ -4,11 +4,6 @@
 
 namespace robobaton_demo {
 
-// 功能：解析命令行参数并做合法性检查。
-// 输入：main 函数收到的 argc/argv。
-// 输出：完整 Options；参数非法时抛出 std::invalid_argument。
-Options ParseCommandLine(int argc, char** argv);
-
 // 功能：配置 libsc132 触发输出模式。
 // 输入：options.trigger_mode，默认 software_gpio。
 // 副作用：设置进程内环境变量 SC132_TRIGGER_MODE，libsc132 初始化时读取。

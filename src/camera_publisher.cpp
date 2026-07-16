@@ -1,155 +1,151 @@
+#ifdef RELEASE008_CONTRACT_TEST
+#include "release008_fake_producers.hpp"
+#else
 #include "robobaton_4p_ros2_demo/camera_publisher.hpp"
+#include "robobaton_4p_ros2_demo/cam_demo_config.h"
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#endif
+
+#include "robobaton_4p_ros2_demo/sc132camera.h"
 
 #include <array>
 #include <atomic>
-#include <exception>
 #include <condition_variable>
-#include <cstdint>
-#include <cstring>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
-#include <mutex>
-#include <stdexcept>
+#include <exception>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
-#include <sensor_msgs/msg/camera_info.hpp>
-#include <sensor_msgs/msg/image.hpp>
-
-extern "C" {
-#include "hb_mem_mgr.h"
-#include "robobaton_4p_ros2_demo/sc132camera.h"
-}
-
-#include "robobaton_4p_ros2_demo/cam_demo_config.h"
-
+#ifndef RELEASE008_CONTRACT_TEST
 namespace robobaton_4p_ros2_demo {
+void RecordProcessFailure() noexcept;
+}
+#endif
 
 namespace {
 
-using robobaton_demo::CameraMaskContains;
-using robobaton_demo::CameraMaskPopCount;
-using robobaton_demo::InternalRotateDegrees;
-using robobaton_demo::IsSupportedCameraMask;
-using robobaton_demo::SteadyClockNowNs;
+constexpr std::size_t kMaxCameras = SC132_FRAME_SET_MAX_CAMERAS;
 
-constexpr int kMaxCameras = robobaton_demo::kMaxChannels;
-constexpr char kImageTopicSuffix[] = "/image_raw";
-constexpr char kCameraInfoTopicSuffix[] = "/camera_info";
+void RecordContractEvent(const char* event) {
+#ifdef RELEASE008_CONTRACT_TEST
+  release008_test::RecordEvent(event);
+#else
+  (void)event;
+#endif
+}
 
-struct CameraFrameJob {
-  sc132_frame_t* frame = nullptr;
-  uint32_t camera_id = 0;
-  uint64_t sequence = 0;
-  uint32_t frame_id = 0;
-  uint64_t group_id = 0;
-  uint64_t sensor_timestamp_ns = 0;
-  uint64_t enqueue_timestamp_ns = 0;
-  void* y_data = nullptr;
-  void* uv_data = nullptr;
-  uint64_t y_size = 0;
-  uint64_t uv_size = 0;
-  int width = 0;
-  int height = 0;
-  int stride = 0;
-  int vstride = 0;
+struct CameraCoreConfig {
+  uint32_t camera_mask = 1U;
+  uint32_t fps = 30U;
+  uint32_t rotation = 90U;
+  uint32_t width = SC132_NATIVE_OUTPUT_WIDTH;
+  uint32_t height = SC132_NATIVE_OUTPUT_HEIGHT;
+  uint32_t timeout_ms = 100U;
+  uint64_t max_skew_ns = 1000000ULL;
+  std::size_t queue_capacity = 2U;
+  bool drop_newest = false;
 };
 
-void ReleaseFrameJob(CameraFrameJob* job) {
-  if (job != nullptr && job->frame != nullptr) {
-    sc132_frame_release(job->frame);
-    job->frame = nullptr;
-  }
-}
+class RetainedFrameJob {
+ public:
+  RetainedFrameJob() = default;
+  RetainedFrameJob(sc132_frame_t* frame, const sc132_frame_info_t& info)
+      : frame_(frame), info_(info) {}
+  ~RetainedFrameJob() { Reset(); }
 
-std::string CameraTopic(int camera_id, const char* suffix) {
-  return "/robobaton/cam" + std::to_string(camera_id) + suffix;
-}
+  RetainedFrameJob(const RetainedFrameJob&) = delete;
+  RetainedFrameJob& operator=(const RetainedFrameJob&) = delete;
 
-std::string CameraFrameId(const std::string& prefix, int camera_id) {
-  return prefix + std::to_string(camera_id) + "_optical_frame";
-}
+  RetainedFrameJob(RetainedFrameJob&& other) noexcept { MoveFrom(other); }
+  RetainedFrameJob& operator=(RetainedFrameJob&& other) noexcept {
+    if (this != &other) {
+      Reset();
+      MoveFrom(other);
+    }
+    return *this;
+  }
 
-void ValidateCameraConfig(const CameraPublisher::Config& config) {
-  const auto& options = config.options;
-  if (!IsSupportedCameraMask(options.camera_mask)) {
-    throw std::invalid_argument("camera.camera_mask supports only one physical camera or all four cameras");
+  const sc132_frame_info_t& info() const { return info_; }
+  bool owns_frame() const { return frame_ != nullptr; }
+
+  void Reset() noexcept {
+    if (frame_ != nullptr) {
+      sc132_frame_release(frame_);
+      frame_ = nullptr;
+    }
   }
-  if (options.channels != CameraMaskPopCount(options.camera_mask)) {
-    throw std::invalid_argument("camera channels must match camera_mask popcount");
+
+ private:
+  void MoveFrom(RetainedFrameJob& other) noexcept {
+    frame_ = other.frame_;
+    info_ = other.info_;
+    other.frame_ = nullptr;
+    other.info_ = {};
   }
-  if (options.fps != 30 && options.fps != 60) {
-    throw std::invalid_argument("camera fps must be 30 or 60");
-  }
-  if (options.rotate_degrees != 0 && options.rotate_degrees != 90 &&
-      options.rotate_degrees != 180 && options.rotate_degrees != 270) {
-    throw std::invalid_argument("camera rotate_degrees must be 0, 90, 180, or 270");
-  }
-  // 2026-07-09 修改原因：沿用 cam_demo 约束，对外 180 度在四路 60fps 下会触发底层慢路径，当前不支持。
-  if (InternalRotateDegrees(options) == 270 && options.fps == 60) {
-    throw std::invalid_argument("camera rotate 180 is not supported at 60fps; use fps=30 or rotate=0");
-  }
-  if (options.frame_set_max_skew_ns == 0 || options.frame_set_timeout_ms == 0) {
-    throw std::invalid_argument("camera frame-set skew/timeout must be positive");
-  }
-  if (config.queue_capacity == 0) {
-    throw std::invalid_argument("camera queue_capacity must be positive");
-  }
-  if (config.image_encoding != "nv12") {
-    throw std::invalid_argument("camera image_encoding v1 only supports nv12");
-  }
-}
+
+  sc132_frame_t* frame_ = nullptr;
+  sc132_frame_info_t info_{};
+};
 
 class FrameQueue {
  public:
-  FrameQueue(std::size_t capacity, CameraPublisher::QueuePolicy policy)
-      : capacity_(capacity), policy_(policy) {}
+  FrameQueue(std::size_t capacity, bool drop_newest)
+      : capacity_(capacity), drop_newest_(drop_newest) {}
 
   FrameQueue(const FrameQueue&) = delete;
   FrameQueue& operator=(const FrameQueue&) = delete;
 
-  bool Push(CameraFrameJob item) {
+  bool Push(RetainedFrameJob job) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (stopped_) {
       return false;
     }
-    if (policy_ == CameraPublisher::QueuePolicy::kDropNewest && queue_.size() >= capacity_) {
-      ++dropped_newest_count_;
+#ifdef RELEASE008_CONTRACT_TEST
+    if (fail_next_allocation_) {
+      fail_next_allocation_ = false;
+      throw std::bad_alloc();
+    }
+#endif
+    if (drop_newest_ && queue_.size() >= capacity_) {
       return false;
     }
-
-    if (queue_.size() >= capacity_) {
-      ++full_wait_count_;
-    }
-    // 2026-07-09 修改原因：block 模式沿用非 ROS demo 的背压语义，避免静默丢掉四目同步帧。
-    not_full_.wait(lock, [&] { return stopped_ || queue_.size() < capacity_; });
+    not_full_.wait(lock, [this] { return stopped_ || queue_.size() < capacity_; });
     if (stopped_) {
       return false;
     }
-
-    queue_.push_back(item);
+    queue_.push_back(std::move(job));
     lock.unlock();
     not_empty_.notify_one();
     return true;
   }
 
-  bool Pop(CameraFrameJob* item) {
+  bool Pop(RetainedFrameJob* output) {
     std::unique_lock<std::mutex> lock(mutex_);
-    not_empty_.wait(lock, [&] { return stopped_ || !queue_.empty(); });
-    if (queue_.empty()) {
+    not_empty_.wait(lock, [this] { return stopped_ || !queue_.empty(); });
+    if (stopped_ || queue_.empty()) {
       return false;
     }
-
-    *item = queue_.front();
+    *output = std::move(queue_.front());
     queue_.pop_front();
     lock.unlock();
     not_full_.notify_one();
     return true;
   }
 
-  void Stop() {
+  void CloseAdmission() noexcept {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       stopped_ = true;
@@ -158,47 +154,463 @@ class FrameQueue {
     not_full_.notify_all();
   }
 
-  std::size_t size() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return queue_.size();
+  void StopAndDetach(std::deque<RetainedFrameJob>* detached) noexcept {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopped_ = true;
+      detached->swap(queue_);
+    }
+    not_empty_.notify_all();
+    not_full_.notify_all();
   }
 
-  uint64_t full_wait_count() const {
+#ifdef RELEASE008_CONTRACT_TEST
+  void FailNextAllocation() {
     std::lock_guard<std::mutex> lock(mutex_);
-    return full_wait_count_;
+    fail_next_allocation_ = true;
   }
-
-  uint64_t dropped_newest_count() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return dropped_newest_count_;
-  }
+#endif
 
  private:
   const std::size_t capacity_;
-  const CameraPublisher::QueuePolicy policy_;
-  mutable std::mutex mutex_;
+  const bool drop_newest_;
+  std::mutex mutex_;
   std::condition_variable not_empty_;
   std::condition_variable not_full_;
-  std::deque<CameraFrameJob> queue_;
-  uint64_t full_wait_count_ = 0;
-  uint64_t dropped_newest_count_ = 0;
+  std::deque<RetainedFrameJob> queue_;
   bool stopped_ = false;
+#ifdef RELEASE008_CONTRACT_TEST
+  bool fail_next_allocation_ = false;
+#endif
 };
+
+class CameraLifecycleCore {
+ public:
+  using Sink = std::function<void(const RetainedFrameJob&)>;
+  using FailureNotifier = std::function<void()>;
+
+  CameraLifecycleCore() : bridge_(new CallbackBridge()) { bridge_->owner.store(this); }
+  ~CameraLifecycleCore() {
+#ifdef RELEASE008_CONTRACT_TEST
+    ForceJoinForTest();
+    bridge_->owner.store(nullptr, std::memory_order_release);
+    // 2026-07-15 修改原因：生产 bridge 为进程生命周期；主机 harness 显式回收以启用 LeakSanitizer gate。
+    delete bridge_;
+#endif
+  }
+
+  CameraLifecycleCore(const CameraLifecycleCore&) = delete;
+  CameraLifecycleCore& operator=(const CameraLifecycleCore&) = delete;
+
+  bool Start(const CameraCoreConfig& config, Sink sink, FailureNotifier notifier) {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (start_claimed_ || terminal_) {
+      return false;
+    }
+    start_claimed_ = true;
+    config_ = config;
+    sink_ = std::move(sink);
+    failure_notifier_ = std::move(notifier);
+    if (!ValidateConfig()) {
+      RecordFailure();
+      (void)CleanupLocked();
+      return false;
+    }
+
+    try {
+      InitializeQueues();
+      bridge_->owner.store(this, std::memory_order_release);
+      bridge_->accepting.store(true, std::memory_order_release);
+      if (sc132_set_fps(config_.fps) != SC132_STATUS_OK ||
+          sc132_set_output_rotation(config_.rotation) != SC132_STATUS_OK) {
+        throw std::runtime_error("SC132 configuration failed");
+      }
+      StartWorkers();
+      sc132_frame_set_config_t producer_config = SC132_FRAME_SET_CONFIG_INIT;
+      producer_config.callback = &CameraLifecycleCore::FrameSetTrampoline;
+      producer_config.user_data = bridge_;
+      producer_config.camera_count = EnabledCameraCount();
+      producer_config.width = config_.width;
+      producer_config.height = config_.height;
+      producer_config.timeout_ms = config_.timeout_ms;
+      producer_config.max_skew_ns = config_.max_skew_ns;
+      start_attempted_ = true;
+      const int32_t status = sc132_start_frame_set(&producer_config, config_.camera_mask);
+      if (status != SC132_STATUS_OK) {
+        throw std::runtime_error("SC132 frame-set startup failed");
+      }
+      running_ = true;
+      return true;
+    } catch (...) {
+      RecordFailure();
+      (void)CleanupLocked();
+      return false;
+    }
+  }
+
+  bool Cleanup() noexcept {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    return CleanupLocked();
+  }
+
+  bool failed() const noexcept { return failed_.load(std::memory_order_acquire); }
+
+#ifdef RELEASE008_CONTRACT_TEST
+  void FailNextQueueAllocation() {
+    for (auto& queue : queues_) {
+      if (queue) {
+        queue->FailNextAllocation();
+      }
+    }
+  }
+  void ThrowInCallback() noexcept { throw_in_callback_.store(true); }
+  void FailJoin() noexcept { fail_join_.store(true); }
+#endif
+
+ private:
+  struct CallbackBridge {
+    std::atomic<CameraLifecycleCore*> owner{nullptr};
+    std::atomic<bool> accepting{false};
+  };
+
+  bool ValidateConfig() const noexcept {
+    const uint32_t valid_mask = (1U << kMaxCameras) - 1U;
+    return config_.camera_mask != 0U && (config_.camera_mask & ~valid_mask) == 0U &&
+           config_.queue_capacity > 0U && config_.width > 0U && config_.height > 0U &&
+           config_.timeout_ms > 0U && config_.max_skew_ns > 0U;
+  }
+
+  uint32_t EnabledCameraCount() const noexcept {
+    uint32_t count = 0U;
+    for (uint32_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (CameraEnabled(camera_id)) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  bool CameraEnabled(uint32_t camera_id) const noexcept {
+    return camera_id < kMaxCameras && (config_.camera_mask & (1U << camera_id)) != 0U;
+  }
+
+  void InitializeQueues() {
+    for (uint32_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (CameraEnabled(camera_id)) {
+        queues_[camera_id] =
+            std::make_unique<FrameQueue>(config_.queue_capacity, config_.drop_newest);
+      }
+    }
+  }
+
+  void StartWorkers() {
+    for (uint32_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (CameraEnabled(camera_id)) {
+        workers_[camera_id] = std::thread(&CameraLifecycleCore::WorkerLoop, this, camera_id);
+      }
+    }
+  }
+
+  static void FrameSetTrampoline(const sc132_frame_set_t* frame_set, void* user_data) noexcept {
+    auto* bridge = static_cast<CallbackBridge*>(user_data);
+    if (bridge == nullptr || !bridge->accepting.load(std::memory_order_acquire)) {
+      return;
+    }
+    CameraLifecycleCore* owner = bridge->owner.load(std::memory_order_acquire);
+    if (owner == nullptr) {
+      return;
+    }
+    try {
+      owner->HandleFrameSet(frame_set);
+    } catch (...) {
+      owner->CloseAdmissionAndRequestStop();
+      owner->RecordFailure();
+      RecordContractEvent("consumer.sc.callback_failure");
+    }
+  }
+
+  void HandleFrameSet(const sc132_frame_set_t* frame_set) {
+#ifdef RELEASE008_CONTRACT_TEST
+    if (throw_in_callback_.exchange(false)) {
+      throw std::runtime_error("injected callback exception");
+    }
+#endif
+    if (frame_set == nullptr || frame_set->struct_size != sizeof(*frame_set) ||
+        frame_set->camera_count != EnabledCameraCount() || frame_set->camera_count == 0U ||
+        frame_set->camera_count > kMaxCameras) {
+      throw std::runtime_error("invalid frame-set header");
+    }
+    std::array<bool, kMaxCameras> seen{};
+    for (uint32_t index = 0; index < frame_set->camera_count; ++index) {
+      const sc132_frame_set_item_t& item = frame_set->items[index];
+      const uint32_t camera_id = item.camera_id;
+      if (!CameraEnabled(camera_id) || seen[camera_id] || item.frame == nullptr) {
+        throw std::runtime_error("invalid frame-set item");
+      }
+      seen[camera_id] = true;
+      sc132_frame_info_t info{};
+      info.struct_size = sizeof(info);
+      if (sc132_frame_get_info(item.frame, &info) != SC132_STATUS_OK ||
+          info.struct_size != sizeof(info) || info.camera_id != camera_id ||
+          info.y_data == nullptr || info.uv_data == nullptr || info.y_size == 0U ||
+          info.uv_size == 0U || info.width == 0U || info.height == 0U ||
+          info.stride == 0U || info.vstride == 0U) {
+        throw std::runtime_error("invalid frame metadata");
+      }
+      sc132_frame_t* frame = item.frame;
+      const int32_t retain_status = sc132_frame_retain(frame);  // RELEASE008_RETAIN_CALL
+      if (retain_status != SC132_STATUS_OK) {
+        throw std::runtime_error("frame retain failed");
+      }
+      RetainedFrameJob job(frame, info);
+      if (!queues_[camera_id]->Push(std::move(job))) {
+        continue;
+      }
+    }
+  }
+
+  void WorkerLoop(uint32_t camera_id) noexcept {
+    RecordContractEvent("consumer.sc.worker_start");
+    try {
+      RetainedFrameJob job;
+      while (queues_[camera_id]->Pop(&job)) {
+        sink_(job);
+        job.Reset();
+      }
+    } catch (...) {
+      RecordContractEvent("consumer.sc.worker_failure");
+      RecordFailure();
+      CloseAdmissionAndRequestStop();
+    }
+  }
+
+  void RecordFailure() noexcept {
+    const bool first = !failed_.exchange(true, std::memory_order_acq_rel);
+    if (first && failure_notifier_) {
+      try {
+        failure_notifier_();
+      } catch (...) {
+      }
+    }
+  }
+
+  void CloseAdmissionAndRequestStop() noexcept {
+    bridge_->accepting.store(false, std::memory_order_release);
+    if (!accepting_closed_.exchange(true, std::memory_order_acq_rel)) {
+      RecordContractEvent("consumer.sc.accepting_false");
+    }
+    if (!stop_requested_.exchange(true, std::memory_order_acq_rel)) {
+      sc132_request_stop();
+    }
+    for (auto& queue : queues_) {
+      if (queue) {
+        queue->CloseAdmission();
+      }
+    }
+  }
+
+  bool CleanupLocked() noexcept {
+    if (!start_claimed_) {
+      return true;
+    }
+    if (cleanup_complete_) {
+      return cleanup_quiesced_;
+    }
+    terminal_ = true;
+    CloseAdmissionAndRequestStop();
+
+    RecordContractEvent("consumer.sc.detach_queues");
+    std::array<std::deque<RetainedFrameJob>, kMaxCameras> detached;
+    for (std::size_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (queues_[camera_id]) {
+        queues_[camera_id]->StopAndDetach(&detached[camera_id]);
+      }
+    }
+    // 2026-07-15 修改原因：先完成所有队列锁内 detach，再在任何队列锁之外统一归还 retained frames。
+    for (auto& batch : detached) {
+      batch.clear();
+    }
+
+    RecordContractEvent("consumer.sc.join_workers");
+#ifdef RELEASE008_CONTRACT_TEST
+    if (fail_join_.load(std::memory_order_acquire)) {
+      RecordContractEvent("consumer.sc.join_failure");
+      cleanup_quiesced_ = false;
+      RecordFailure();
+      return false;
+    }
+#endif
+    try {
+      for (auto& worker : workers_) {
+        if (worker.joinable()) {
+          worker.join();
+        }
+      }
+    } catch (const std::system_error&) {
+      cleanup_quiesced_ = false;
+      RecordFailure();
+      return false;
+    }
+
+    // 2026-07-15 修改原因：v2 void stop 需要同一 owner 连续调用两次；第二次负责幂等确认或 STOPPING 重试。
+    sc132_stop();  // RELEASE008_SC_STOP_CALL_1
+    sc132_stop();  // RELEASE008_SC_STOP_CALL_2
+    running_ = false;
+    cleanup_quiesced_ = true;
+    cleanup_complete_ = true;
+    sink_ = {};
+    failure_notifier_ = {};
+    return true;
+  }
+
+#ifdef RELEASE008_CONTRACT_TEST
+  void ForceJoinForTest() noexcept {
+    std::array<std::deque<RetainedFrameJob>, kMaxCameras> detached;
+    for (std::size_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (queues_[camera_id]) {
+        queues_[camera_id]->CloseAdmission();
+        queues_[camera_id]->StopAndDetach(&detached[camera_id]);
+      }
+    }
+    for (auto& batch : detached) {
+      batch.clear();
+    }
+    for (auto& worker : workers_) {
+      if (worker.joinable()) {
+        worker.join();
+      }
+    }
+    bridge_->accepting.store(false, std::memory_order_release);
+  }
+#endif
+
+  CameraCoreConfig config_{};
+  CallbackBridge* const bridge_;
+  Sink sink_;
+  FailureNotifier failure_notifier_;
+  std::array<std::unique_ptr<FrameQueue>, kMaxCameras> queues_{};
+  std::array<std::thread, kMaxCameras> workers_{};
+  std::mutex lifecycle_mutex_;
+  std::atomic<bool> failed_{false};
+  std::atomic<bool> accepting_closed_{false};
+  std::atomic<bool> stop_requested_{false};
+  bool start_claimed_ = false;
+  bool start_attempted_ = false;
+  bool running_ = false;
+  bool terminal_ = false;
+  bool cleanup_complete_ = false;
+  bool cleanup_quiesced_ = false;
+#ifdef RELEASE008_CONTRACT_TEST
+  std::atomic<bool> throw_in_callback_{false};
+  std::atomic<bool> fail_join_{false};
+#endif
+};
+
+}  // namespace
+
+#ifdef RELEASE008_CONTRACT_TEST
+
+namespace release008_test {
+
+struct CameraHarness {
+  CameraLifecycleCore core;
+  CameraHarnessConfig config;
+  std::atomic<bool> throw_in_worker{false};
+};
+
+void* CameraHarnessCreate(const CameraHarnessConfig& config) {
+  auto* harness = new CameraHarness();
+  harness->config = config;
+  return harness;
+}
+
+bool CameraHarnessStart(void* opaque) {
+  auto* harness = static_cast<CameraHarness*>(opaque);
+  CameraCoreConfig config;
+  config.camera_mask = harness->config.camera_mask;
+  config.fps = harness->config.fps;
+  config.rotation = harness->config.rotation;
+  config.width = harness->config.width;
+  config.height = harness->config.height;
+  config.timeout_ms = harness->config.timeout_ms;
+  config.max_skew_ns = harness->config.max_skew_ns;
+  config.queue_capacity = harness->config.queue_capacity;
+  return harness->core.Start(
+      config,
+      [harness](const RetainedFrameJob&) {
+        if (harness->throw_in_worker.exchange(false)) {
+          throw std::runtime_error("injected worker failure");
+        }
+        RecordContractEvent("consumer.sc.publish");
+      },
+      [] {});
+}
+
+bool CameraHarnessStop(void* opaque) {
+  return static_cast<CameraHarness*>(opaque)->core.Cleanup();
+}
+
+void CameraHarnessDestroy(void* opaque) { delete static_cast<CameraHarness*>(opaque); }
+
+void CameraHarnessFailNextQueueAllocation(void* opaque) {
+  static_cast<CameraHarness*>(opaque)->core.FailNextQueueAllocation();
+}
+
+void CameraHarnessThrowInCallback(void* opaque) {
+  static_cast<CameraHarness*>(opaque)->core.ThrowInCallback();
+}
+
+void CameraHarnessThrowInWorker(void* opaque) {
+  static_cast<CameraHarness*>(opaque)->throw_in_worker.store(true);
+}
+
+void CameraHarnessFailJoin(void* opaque) {
+  static_cast<CameraHarness*>(opaque)->core.FailJoin();
+}
+
+bool CameraHarnessFailed(void* opaque) {
+  return static_cast<CameraHarness*>(opaque)->core.failed();
+}
+
+}  // namespace release008_test
+
+#else
+
+namespace robobaton_4p_ros2_demo {
+namespace {
+
+constexpr char kImageTopicSuffix[] = "/image_raw";
+constexpr char kCameraInfoTopicSuffix[] = "/camera_info";
+
+std::string CameraTopic(uint32_t camera_id, const char* suffix) {
+  return "/robobaton/cam" + std::to_string(camera_id) + suffix;
+}
+
+std::string CameraFrameId(const std::string& prefix, uint32_t camera_id) {
+  return prefix + std::to_string(camera_id) + "_optical_frame";
+}
+
+CameraLifecycleCore& ProcessCameraCore() {
+  // 2026-07-15 修改原因：SC v2 stop 无返回值，bridge/core 保持进程生命周期且关闭后禁止同进程重启。
+  static CameraLifecycleCore* core = new CameraLifecycleCore();
+  return *core;
+}
 
 }  // namespace
 
 class CameraPublisher::Impl {
  public:
-  Impl(rclcpp::Node* node, Config config) : node_(node), config_(std::move(config)) {
-    ValidateCameraConfig(config_);
-
+  Impl(rclcpp::Node* node, Config config)
+      : node_(node), config_(std::move(config)), core_(ProcessCameraCore()) {
+    if (node_ == nullptr || config_.queue_capacity == 0U || config_.image_encoding != "nv12") {
+      throw std::invalid_argument("invalid camera publisher configuration");
+    }
     auto image_qos = rclcpp::SensorDataQoS();
     image_qos.keep_last(2);
-    auto camera_info_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
-
-    InitializeQueues();
-    for (int camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
-      if (!CameraMaskContains(config_.options.camera_mask, camera_id)) {
+    auto info_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    for (uint32_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (!robobaton_demo::CameraMaskContains(config_.options.camera_mask,
+                                               static_cast<int>(camera_id))) {
         continue;
       }
       image_publishers_[camera_id] = node_->create_publisher<sensor_msgs::msg::Image>(
@@ -206,7 +618,7 @@ class CameraPublisher::Impl {
       if (config_.publish_camera_info) {
         camera_info_publishers_[camera_id] =
             node_->create_publisher<sensor_msgs::msg::CameraInfo>(
-                CameraTopic(camera_id, kCameraInfoTopicSuffix), camera_info_qos);
+                CameraTopic(camera_id, kCameraInfoTopicSuffix), info_qos);
       }
     }
   }
@@ -214,265 +626,100 @@ class CameraPublisher::Impl {
   ~Impl() { Stop(); }
 
   void Start() {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-    if (started_) {
+    robobaton_demo::ConfigureSc132TriggerMode(config_.options);
+    robobaton_demo::ConfigureSc132SensorProfile(config_.options);
+    CameraCoreConfig core_config;
+    core_config.camera_mask = config_.options.camera_mask;
+    core_config.fps = static_cast<uint32_t>(config_.options.fps);
+    core_config.rotation =
+        static_cast<uint32_t>(robobaton_demo::InternalRotateDegrees(config_.options));
+    core_config.width = SC132_NATIVE_OUTPUT_WIDTH;
+    core_config.height = SC132_NATIVE_OUTPUT_HEIGHT;
+    core_config.timeout_ms = config_.options.frame_set_timeout_ms;
+    core_config.max_skew_ns = config_.options.frame_set_max_skew_ns;
+    core_config.queue_capacity = config_.queue_capacity;
+    core_config.drop_newest = config_.queue_policy == QueuePolicy::kDropNewest;
+    if (!core_.Start(
+            core_config,
+            [this](const RetainedFrameJob& job) { PublishFrame(job); },
+            [this] {
+              robobaton_4p_ros2_demo::RecordProcessFailure();
+              RCLCPP_ERROR(node_->get_logger(), "SC132 lifecycle failure; shutting down");
+              rclcpp::shutdown();
+            })) {
+      throw std::runtime_error("SC132 publisher start failed or restart was rejected");
+    }
+    started_ = true;
+    RCLCPP_INFO(node_->get_logger(), "Started SC132 camera publisher mask=0x%X",
+                config_.options.camera_mask);
+  }
+
+  void Stop() noexcept {
+    if (!started_ && !core_.failed()) {
       return;
     }
-
-    stopping_.store(false);
-    ResetQueuesForStart();
-    try {
-      StartUnlocked();
-      started_ = true;
-    } catch (...) {
-      StopUnlocked();
-      throw;
+    if (!core_.Cleanup()) {
+      robobaton_4p_ros2_demo::RecordProcessFailure();
+      RCLCPP_FATAL(node_->get_logger(), "SC132 worker join failed; terminating fail-closed");
+      std::_Exit(1);
     }
-  }
-
-  void Stop() {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-    StopUnlocked();
-  }
-
- private:
-  void InitializeQueues() {
-    for (auto& queue : queues_) {
-      queue = std::make_unique<FrameQueue>(config_.queue_capacity, config_.queue_policy);
-    }
-  }
-
-  void ResetQueuesForStart() {
-    // 2026-07-09 修改原因：FrameQueue::Stop() 后不可复用；每次启动前重建队列，避免重启后 Push/Pop 永远停在 stopped 状态。
-    InitializeQueues();
-  }
-
-  void StopQueues() {
-    for (auto& queue : queues_) {
-      if (queue) {
-        queue->Stop();
-      }
-    }
-  }
-
-  void StartUnlocked() {
-    const auto& options = config_.options;
-    if (VioCamSetFps(options.fps) != 0) {
-      throw std::runtime_error("VioCamSetFps failed");
-    }
-    if (VioCamSetOutputRotate(InternalRotateDegrees(options)) != 0) {
-      throw std::runtime_error("VioCamSetOutputRotate failed");
-    }
-    robobaton_demo::ConfigureSc132TriggerMode(options);
-    robobaton_demo::ConfigureSc132SensorProfile(options);
-
-    // 2026-07-09 修改原因：SC132 输出 DMA 图像依赖 hbmem，必须先打开模块再启动相机链路。
-    if (hb_mem_module_open() != 0) {
-      throw std::runtime_error("hb_mem_module_open failed");
-    }
-    hbmem_opened_ = true;
-
-    for (int camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
-      if (CameraMaskContains(options.camera_mask, camera_id)) {
-        workers_[camera_id] = std::thread(&Impl::WorkerLoop, this, camera_id);
-      }
-    }
-
-    sc132_frame_set_config_t frame_set_config{};
-    frame_set_config.cb = &Impl::FrameSetCallback;
-    frame_set_config.user = this;
-    frame_set_config.camera_count = CameraMaskPopCount(options.camera_mask);
-    frame_set_config.max_skew_ns = options.frame_set_max_skew_ns;
-    frame_set_config.timeout_ms = options.frame_set_timeout_ms;
-    // 2026-07-09 修改原因：沿用 cam_demo，libsc132 内部必须使用 sensor 原始尺寸，不使用对外输出尺寸。
-    frame_set_config.width = robobaton_demo::kSensorInputWidth;
-    frame_set_config.height = robobaton_demo::kSensorInputHeight;
-
-    if (VioCamInitmFrameSetMask(&frame_set_config, options.camera_mask) != 0) {
-      throw std::runtime_error("VioCamInitmFrameSetMask failed");
-    }
-    camera_started_ = true;
-
-    RCLCPP_INFO(node_->get_logger(), "Started SC132 ROS2 camera publisher mask=0x%X fps=%d",
-                options.camera_mask, options.fps);
-  }
-
-  void StopUnlocked() {
-    stopping_.store(true);
-
-    StopQueues();
-
-    if (camera_started_) {
-      VioCamClose();
-      camera_started_ = false;
-    }
-    for (auto& worker : workers_) {
-      if (worker.joinable()) {
-        worker.join();
-      }
-    }
-
-    if (hbmem_opened_) {
-      (void)hb_mem_module_close();
-      hbmem_opened_ = false;
-    }
-    if (started_) {
-      RCLCPP_INFO(node_->get_logger(), "Stopped SC132 ROS2 camera publisher");
+    if (core_.failed()) {
+      robobaton_4p_ros2_demo::RecordProcessFailure();
     }
     started_ = false;
   }
 
-  static void FrameSetCallback(const sc132_frame_set_t* frame_set, void* user) {
-    if (user == nullptr) {
-      return;
+ private:
+  void PublishFrame(const RetainedFrameJob& job) {
+    const auto& info = job.info();
+    if (!job.owns_frame() || info.y_size > std::numeric_limits<std::size_t>::max() ||
+        info.uv_size > std::numeric_limits<std::size_t>::max() ||
+        info.y_size > std::numeric_limits<std::size_t>::max() - info.uv_size) {
+      throw std::runtime_error("invalid SC132 frame size");
     }
-    static_cast<Impl*>(user)->HandleFrameSet(frame_set);
-  }
-
-  void HandleFrameSet(const sc132_frame_set_t* frame_set) {
-    if (frame_set == nullptr || stopping_.load()) {
-      return;
+    const uint32_t camera_id = info.camera_id;
+    if (camera_id >= kMaxCameras || !image_publishers_[camera_id]) {
+      throw std::runtime_error("invalid SC132 camera id");
     }
-    if (frame_set->camera_count > kMaxCameras) {
-      invalid_frame_set_count_.fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-
-    for (uint32_t i = 0; i < frame_set->camera_count; ++i) {
-      const sc132_frame_set_item_t& item = frame_set->items[i];
-      const int camera_id = static_cast<int>(item.camera_id);
-      if (!CameraMaskContains(config_.options.camera_mask, camera_id) || item.frame == nullptr) {
-        continue;
-      }
-      EnqueueCameraFrame(camera_id, item, *frame_set);
-    }
-  }
-
-  void EnqueueCameraFrame(int camera_id, const sc132_frame_set_item_t& item,
-                          const sc132_frame_set_t& frame_set) {
-    sc132_frame_t* frame = item.frame;
-    const hb_mem_graphic_buf_t* graph_buf = sc132_frame_get_graphic_buf(frame);
-    if (graph_buf == nullptr || graph_buf->virt_addr[0] == nullptr ||
-        graph_buf->virt_addr[1] == nullptr || graph_buf->size[0] == 0 ||
-        graph_buf->size[1] == 0 || graph_buf->stride <= 0 || graph_buf->vstride <= 0) {
-      invalid_dma_frame_counts_[camera_id].fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-
-    if (sc132_frame_retain(frame) != 0) {
-      retain_failed_counts_[camera_id].fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-
-    CameraFrameJob job;
-    job.frame = frame;
-    job.camera_id = static_cast<uint32_t>(camera_id);
-    job.sequence = item.sequence;
-    job.frame_id = item.frame_id;
-    job.group_id = frame_set.group_id;
-    job.sensor_timestamp_ns = item.timestamp_ns;
-    job.enqueue_timestamp_ns = SteadyClockNowNs();
-    job.y_data = graph_buf->virt_addr[0];
-    job.uv_data = graph_buf->virt_addr[1];
-    job.y_size = graph_buf->size[0];
-    job.uv_size = graph_buf->size[1];
-    job.width = item.width > 0 ? item.width : sc132_frame_get_width(frame);
-    job.height = item.height > 0 ? item.height : sc132_frame_get_height(frame);
-    job.stride = graph_buf->stride;
-    job.vstride = graph_buf->vstride;
-
-    // 2026-07-09 修改原因：采集回调只做 retain+metadata+enqueue，大拷贝和 ROS publish 放到 worker。
-    if (!queues_[camera_id]->Push(job)) {
-      ReleaseFrameJob(&job);
-    }
-  }
-
-  void HandleWorkerFailure(int camera_id, CameraFrameJob* job, const char* reason) {
-    // 2026-07-09 修改原因：worker 不能调用 StopUnlocked 避免自 join；只停队列并请求 ROS shutdown。
-    ReleaseFrameJob(job);
-    stopping_.store(true);
-    StopQueues();
-    RCLCPP_ERROR(node_->get_logger(), "cam%d worker failed: %s; shutting down node", camera_id,
-                 reason);
-    rclcpp::shutdown();
-  }
-
-  void WorkerLoop(int camera_id) {
-    CameraFrameJob job;
-    // 2026-07-09 修改原因：worker 顶层兜底异常，避免 ROS publish 或内存分配异常触发 std::terminate。
-    try {
-      while (queues_[camera_id]->Pop(&job)) {
-        PublishFrame(camera_id, job);
-        ReleaseFrameJob(&job);
-      }
-    } catch (const std::exception& e) {
-      HandleWorkerFailure(camera_id, &job, e.what());
-    } catch (...) {
-      HandleWorkerFailure(camera_id, &job, "unknown exception");
-    }
-  }
-
-  void PublishFrame(int camera_id, const CameraFrameJob& job) {
-    if (job.y_data == nullptr || job.uv_data == nullptr || job.width <= 0 || job.height <= 0 ||
-        job.stride <= 0 || job.y_size == 0 || job.uv_size == 0) {
-      RCLCPP_WARN(node_->get_logger(), "cam%d invalid queued frame, skip publish", camera_id);
-      return;
-    }
-
-    auto image_msg = sensor_msgs::msg::Image();
-    // 2026-07-09 修改原因：sensor timestamp 时间域未确认，第一版统一使用 ROS 发布时间。
-    image_msg.header.stamp = node_->now();
-    image_msg.header.frame_id = CameraFrameId(config_.frame_id_prefix, camera_id);
-    image_msg.height = static_cast<uint32_t>(job.height);
-    image_msg.width = static_cast<uint32_t>(job.width);
-    image_msg.encoding = config_.image_encoding;
-    image_msg.is_bigendian = false;
-    image_msg.step = static_cast<uint32_t>(job.stride);
-
-    const std::size_t y_size = static_cast<std::size_t>(job.y_size);
-    const std::size_t uv_size = static_cast<std::size_t>(job.uv_size);
-    image_msg.data.resize(y_size + uv_size);
-    std::memcpy(image_msg.data.data(), job.y_data, y_size);
-    std::memcpy(image_msg.data.data() + y_size, job.uv_data, uv_size);
-
-    image_publishers_[camera_id]->publish(image_msg);
-    ++published_counts_[camera_id];
-
+    sensor_msgs::msg::Image image;
+    image.header.stamp = node_->now();
+    image.header.frame_id = CameraFrameId(config_.frame_id_prefix, camera_id);
+    image.height = info.height;
+    image.width = info.width;
+    image.encoding = config_.image_encoding;
+    image.is_bigendian = false;
+    image.step = info.stride;
+    const std::size_t y_size = static_cast<std::size_t>(info.y_size);
+    const std::size_t uv_size = static_cast<std::size_t>(info.uv_size);
+    image.data.resize(y_size + uv_size);
+    std::memcpy(image.data.data(), info.y_data, y_size);
+    std::memcpy(image.data.data() + y_size, info.uv_data, uv_size);
+    image_publishers_[camera_id]->publish(image);
     if (camera_info_publishers_[camera_id]) {
-      auto info_msg = sensor_msgs::msg::CameraInfo();
-      info_msg.header = image_msg.header;
-      info_msg.width = image_msg.width;
-      info_msg.height = image_msg.height;
-      info_msg.distortion_model = "";
-      camera_info_publishers_[camera_id]->publish(info_msg);
+      sensor_msgs::msg::CameraInfo camera_info;
+      camera_info.header = image.header;
+      camera_info.width = image.width;
+      camera_info.height = image.height;
+      camera_info_publishers_[camera_id]->publish(camera_info);
     }
   }
 
-  std::atomic<uint64_t> invalid_frame_set_count_{0};
-  std::array<std::atomic<uint64_t>, kMaxCameras> invalid_dma_frame_counts_{};
-  std::array<std::atomic<uint64_t>, kMaxCameras> retain_failed_counts_{};
-  rclcpp::Node* node_ = nullptr;
+  rclcpp::Node* node_;
   Config config_;
-  std::mutex lifecycle_mutex_;
-  std::atomic<bool> stopping_{false};
+  CameraLifecycleCore& core_;
   bool started_ = false;
-  bool hbmem_opened_ = false;
-  bool camera_started_ = false;
-  std::array<std::unique_ptr<FrameQueue>, kMaxCameras> queues_{};
-  std::array<std::thread, kMaxCameras> workers_{};
-  std::array<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr, kMaxCameras> image_publishers_{};
+  std::array<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr, kMaxCameras>
+      image_publishers_{};
   std::array<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr, kMaxCameras>
       camera_info_publishers_{};
-  std::array<std::atomic<uint64_t>, kMaxCameras> published_counts_{};
 };
 
 CameraPublisher::CameraPublisher(rclcpp::Node* node, Config config)
     : impl_(std::make_unique<Impl>(node, std::move(config))) {}
-
 CameraPublisher::~CameraPublisher() = default;
-
 void CameraPublisher::Start() { impl_->Start(); }
-
 void CameraPublisher::Stop() { impl_->Stop(); }
 
 }  // namespace robobaton_4p_ros2_demo
+
+#endif
