@@ -89,7 +89,7 @@ class ImuLifecycleCore {
       if (stop_status != ICM42688_STATUS_OK) {
         stop_failed_.store(true, std::memory_order_release);
       }
-      // 2026-07-15 修改原因：start 部分失败仍必须执行 destroy，禁止遗留非空 C handle。
+      // start 部分失败仍由唯一 owner destroy 非空 C handle。
       icm42688_destroy(handle_);
       handle_ = nullptr;
       terminal_ = true;
@@ -111,7 +111,7 @@ class ImuLifecycleCore {
     admission_.store(false, std::memory_order_release);
     int stop_status = ICM42688_STATUS_OK;
     if (handle_ != nullptr && start_attempted_) {
-      // 2026-07-15 修改原因：context 在 stop 返回前保持存活；即使 stop 失败也继续执行唯一 destroy finalizer。
+      // context 保持到 blocking stop 返回；即使 stop 失败，仍执行唯一 destroy finalizer。
       stop_status = icm42688_stop(handle_);
       if (stop_status != ICM42688_STATUS_OK) {
         stop_failed_.store(true, std::memory_order_release);

@@ -18,7 +18,7 @@ class ImuPublisher {
     bool publish_temperature = true;
   };
 
-  // 2026-07-15 修改原因：发布器独占一个 ICM C handle，关闭后禁止同进程重启。
+  // 发布器独占一个 ICM C handle，关闭后禁止同进程重启。
   ImuPublisher(rclcpp::Node* node, Config config);
   ~ImuPublisher();
 

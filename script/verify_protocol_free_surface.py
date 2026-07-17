@@ -10,7 +10,7 @@ import sys
 
 PACKAGE = "robobaton_4p_ros2_demo"
 NODE = "robobaton_sensors_node"
-# 2026-07-16：拆分构造禁用 token，确保扫描器自身不会污染被扫描源码面。
+# 拆分构造禁用 token，防止扫描器自身污染被扫描源码面。
 TOKEN = b"r" + b"t" + b"s" + b"p"
 EXCLUDED_DIR_NAMES = {".git", "build", "install", "log"}
 
@@ -24,7 +24,7 @@ def source_findings(root: Path) -> list[str]:
     pycache_dirs: set[Path] = set()
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
-        # 2026-07-16：只排除版本库元数据与构建产物；canonical 源码和生成缓存均须纳入门禁。
+        # 只排除版本库元数据与构建产物，canonical 可维护源码全部纳入门禁。
         if any(part in EXCLUDED_DIR_NAMES or part.endswith(".ros2_build")
                for part in relative.parts):
             continue

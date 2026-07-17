@@ -27,7 +27,7 @@ class CameraPublisher {
     std::string frame_id_prefix = "robobaton_cam";
   };
 
-  // 2026-07-09 修改原因：ROS2 节点生命周期由上层统一管理，相机模块只封装 X5 采集资源。
+  // 节点统一管理生命周期；本类只封装 X5 相机采集与 ROS 发布资源。
   CameraPublisher(rclcpp::Node* node, Config config);
   ~CameraPublisher();
 

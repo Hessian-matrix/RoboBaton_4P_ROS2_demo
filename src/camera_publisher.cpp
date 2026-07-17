@@ -194,7 +194,7 @@ class CameraLifecycleCore {
 #ifdef RELEASE008_CONTRACT_TEST
     ForceJoinForTest();
     bridge_->owner.store(nullptr, std::memory_order_release);
-    // 2026-07-15 修改原因：生产 bridge 为进程生命周期；主机 harness 显式回收以启用 LeakSanitizer gate。
+    // production bridge 与进程同寿命；主机 harness 显式回收以支持 LeakSanitizer。
     delete bridge_;
 #endif
   }
@@ -426,7 +426,7 @@ class CameraLifecycleCore {
         queues_[camera_id]->StopAndDetach(&detached[camera_id]);
       }
     }
-    // 2026-07-15 修改原因：先完成所有队列锁内 detach，再在任何队列锁之外统一归还 retained frames。
+    // 先在各队列锁内 detach，再在所有队列锁之外统一归还 retained frames。
     for (auto& batch : detached) {
       batch.clear();
     }
@@ -452,7 +452,7 @@ class CameraLifecycleCore {
       return false;
     }
 
-    // 2026-07-15 修改原因：v2 void stop 需要同一 owner 连续调用两次；第二次负责幂等确认或 STOPPING 重试。
+    // 同一 owner 连续调用两次 stop，第二次用于幂等确认或重试 STOPPING cleanup。
     sc132_stop();  // RELEASE008_SC_STOP_CALL_1
     sc132_stop();  // RELEASE008_SC_STOP_CALL_2
     running_ = false;
@@ -591,7 +591,7 @@ std::string CameraFrameId(const std::string& prefix, uint32_t camera_id) {
 }
 
 CameraLifecycleCore& ProcessCameraCore() {
-  // 2026-07-15 修改原因：SC v2 stop 无返回值，bridge/core 保持进程生命周期且关闭后禁止同进程重启。
+  // camera core 与进程同寿命，完成关闭后禁止同进程重启。
   static CameraLifecycleCore* core = new CameraLifecycleCore();
   return *core;
 }

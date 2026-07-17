@@ -29,7 +29,7 @@ bool CameraMaskContains(uint32_t camera_mask, int camera_id) {
 // 输入：用户看到的正装画面以 rotate=0 表示；SC132 原始安装方向需要内部右旋 90 度。
 // 输出：传给 libsc132 的真实旋转角度。
 int InternalRotateDegrees(const Options& options) {
-  // 2026-06-17 修改原因：对外隐藏 sensor 竖装原始方向；用户 rotate=0 时底层仍执行 90 度安装补偿。
+  // 对外隐藏 sensor 竖装方向，用户 rotate=0 时底层执行 90 度安装补偿。
   return (options.rotate_degrees + kMountRotateDegrees) % 360;
 }
 
