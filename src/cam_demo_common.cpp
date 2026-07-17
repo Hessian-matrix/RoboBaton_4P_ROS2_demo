@@ -1,6 +1,14 @@
 #include "robobaton_4p_ros2_demo/cam_demo_common.h"
 
+extern "C" {
+#include "robobaton_4p_ros2_demo/sc132camera.h"
+}
+
 namespace robobaton_demo {
+
+static_assert(kSensorInputWidth == static_cast<int>(SC132_NATIVE_OUTPUT_HEIGHT) &&
+                  kSensorInputHeight == static_cast<int>(SC132_NATIVE_OUTPUT_WIDTH),
+              "SC132 sensor axes must be the transpose of public delivery dimensions");
 
 // 功能：统计 mask 内有效物理相机数量。
 // 输入：只统计 cam0..cam3 四个有效 bit，忽略更高 bit。
@@ -33,4 +41,20 @@ int InternalRotateDegrees(const Options& options) {
   return (options.rotate_degrees + kMountRotateDegrees) % 360;
 }
 
+
+// 2026-07-17 修改原因：ROS frame-set 配置必须与 libsc132 internal rotation 的实际输出轴一致。
+uint32_t Sc132OutputWidth(const Options& options) {
+  const int rotation = InternalRotateDegrees(options);
+  return rotation == 90 || rotation == 270
+             ? static_cast<uint32_t>(kSensorInputHeight)
+             : static_cast<uint32_t>(kSensorInputWidth);
+}
+
+// 2026-07-17 修改原因：与 Sc132OutputWidth 成对映射，避免非默认 ROS rotate 参数启动失败。
+uint32_t Sc132OutputHeight(const Options& options) {
+  const int rotation = InternalRotateDegrees(options);
+  return rotation == 90 || rotation == 270
+             ? static_cast<uint32_t>(kSensorInputWidth)
+             : static_cast<uint32_t>(kSensorInputHeight);
+}
 }  // namespace robobaton_demo

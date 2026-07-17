@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include "robobaton_4p_ros2_demo/sc132camera.h"
 
 namespace robobaton_demo {
 
@@ -13,7 +14,7 @@ constexpr int kDefaultFps = 60;
 constexpr int kDefaultRotateDegrees = 0;
 constexpr int kMountRotateDegrees = 90;
 constexpr uint32_t kDefaultCameraMask = (1U << kMaxChannels) - 1U;
-constexpr uint64_t kDefaultFrameSetMaxSkewNs = 1000000ULL;
+constexpr uint64_t kDefaultFrameSetMaxSkewNs = SC132_FRAME_SET_DEFAULT_MAX_SKEW_NS;
 constexpr uint32_t kDefaultFrameSetTimeoutMs = 100;
 constexpr const char* kDefaultSc132TriggerMode = "software_gpio";
 
@@ -43,5 +44,10 @@ bool CameraMaskContains(uint32_t camera_mask, int camera_id);
 // 输入：options.rotate_degrees 为用户理解的正装画面相对旋转。
 // 输出：传给 libsc132 的真实旋转角度。
 int InternalRotateDegrees(const Options& options);
+
+// 2026-07-17 修改原因：按传给 libsc132 的真实旋转角度返回 producer 帧宽度；纯计算，无副作用。
+uint32_t Sc132OutputWidth(const Options& options);
+// 2026-07-17 修改原因：按传给 libsc132 的真实旋转角度返回 producer 帧高度；纯计算，无副作用。
+uint32_t Sc132OutputHeight(const Options& options);
 
 }  // namespace robobaton_demo

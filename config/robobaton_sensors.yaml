@@ -8,7 +8,7 @@ robobaton_sensors_node:
       camera_mask: 15
       fps: 60
       rotate_degrees: 0
-      frame_set_max_skew_ns: 1000000
+      frame_set_max_skew_ns: 2000000
       frame_set_timeout_ms: 100
       queue_capacity: 4
       queue_policy: "block"

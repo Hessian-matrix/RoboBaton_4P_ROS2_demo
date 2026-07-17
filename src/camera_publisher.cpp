@@ -54,7 +54,7 @@ struct CameraCoreConfig {
   uint32_t width = SC132_NATIVE_OUTPUT_WIDTH;
   uint32_t height = SC132_NATIVE_OUTPUT_HEIGHT;
   uint32_t timeout_ms = 100U;
-  uint64_t max_skew_ns = 1000000ULL;
+  uint64_t max_skew_ns = SC132_FRAME_SET_DEFAULT_MAX_SKEW_NS;
   std::size_t queue_capacity = 2U;
   bool drop_newest = false;
 };
@@ -633,8 +633,8 @@ class CameraPublisher::Impl {
     core_config.fps = static_cast<uint32_t>(config_.options.fps);
     core_config.rotation =
         static_cast<uint32_t>(robobaton_demo::InternalRotateDegrees(config_.options));
-    core_config.width = SC132_NATIVE_OUTPUT_WIDTH;
-    core_config.height = SC132_NATIVE_OUTPUT_HEIGHT;
+    core_config.width = robobaton_demo::Sc132OutputWidth(config_.options);
+    core_config.height = robobaton_demo::Sc132OutputHeight(config_.options);
     core_config.timeout_ms = config_.options.frame_set_timeout_ms;
     core_config.max_skew_ns = config_.options.frame_set_max_skew_ns;
     core_config.queue_capacity = config_.queue_capacity;
