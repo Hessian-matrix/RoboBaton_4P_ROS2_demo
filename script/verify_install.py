@@ -13,6 +13,8 @@ import sys
 PACKAGE = "robobaton_4p_ros2_demo"
 NODE = "robobaton_sensors_node"
 MANIFEST = "abi_manifest.sha256"
+# 内部DDS probe属于主仓validation工具，正式install必须拒绝混入。
+FORBIDDEN_INTERNAL_ARTIFACTS = {"topic_rate_probe"}
 LIBRARIES = {
     "icm42688": {
         "names": ("libicm42688.so.2.0.0", "libicm42688.so.2", "libicm42688.so"),
@@ -129,6 +131,9 @@ def verify(install_dir: Path) -> None:
     node = runtime_dir / NODE
     if not node.is_file() or node.is_symlink() or not (node.stat().st_mode & 0o111):
         raise AssertionError(f"missing executable node: {node}")
+    for name in FORBIDDEN_INTERNAL_ARTIFACTS:
+        if (runtime_dir / name).exists():
+            raise AssertionError(f"internal validation artifact leaked into release install: {name}")
 
     project_needed = {name for name in needed(node)
                       if name.startswith(("libicm42688", "libsc132"))}

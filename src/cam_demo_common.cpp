@@ -42,7 +42,7 @@ int InternalRotateDegrees(const Options& options) {
 }
 
 
-// 2026-07-17 修改原因：ROS frame-set 配置必须与 libsc132 internal rotation 的实际输出轴一致。
+// ROS frame-set 配置必须与 libsc132 internal rotation 的实际输出轴一致。
 uint32_t Sc132OutputWidth(const Options& options) {
   const int rotation = InternalRotateDegrees(options);
   return rotation == 90 || rotation == 270
@@ -50,7 +50,7 @@ uint32_t Sc132OutputWidth(const Options& options) {
              : static_cast<uint32_t>(kSensorInputWidth);
 }
 
-// 2026-07-17 修改原因：与 Sc132OutputWidth 成对映射，避免非默认 ROS rotate 参数启动失败。
+// 与 Sc132OutputWidth 成对映射，避免非默认 ROS rotate 参数启动失败。
 uint32_t Sc132OutputHeight(const Options& options) {
   const int rotation = InternalRotateDegrees(options);
   return rotation == 90 || rotation == 270

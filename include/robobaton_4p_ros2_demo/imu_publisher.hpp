@@ -16,6 +16,9 @@ class ImuPublisher {
     bool direct_read = false;
     std::string frame_id = "robobaton_imu_link";
     bool publish_temperature = true;
+    bool rate_metrics_enabled = false;
+    uint32_t rate_log_period_ms = 1000U;
+    std::string rate_run_id;
   };
 
   // 发布器独占一个 ICM C handle，关闭后禁止同进程重启。

@@ -4,12 +4,15 @@
 #include "robobaton_4p_ros2_demo/camera_publisher.hpp"
 #include "robobaton_4p_ros2_demo/cam_demo_config.h"
 #include <sensor_msgs/msg/camera_info.hpp>
+#include "robobaton_4p_ros2_demo/publication_rate_metrics.hpp"
+#include <rclcpp/create_timer.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #endif
 
 #include "robobaton_4p_ros2_demo/sc132camera.h"
 
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -40,7 +43,7 @@ namespace {
 constexpr std::size_t kMaxCameras = SC132_FRAME_SET_MAX_CAMERAS;
 
 void RecordContractEvent(const char* event) {
-#ifdef RELEASE008_CONTRACT_TEST
+#if defined(RELEASE008_CONTRACT_TEST) && !defined(ROBOBATON_RATE_METRICS_TEST)
   release008_test::RecordEvent(event);
 #else
   (void)event;
@@ -57,6 +60,7 @@ struct CameraCoreConfig {
   uint64_t max_skew_ns = SC132_FRAME_SET_DEFAULT_MAX_SKEW_NS;
   std::size_t queue_capacity = 2U;
   bool drop_newest = false;
+  bool rate_metrics_enabled = false;
 };
 
 class RetainedFrameJob {
@@ -252,6 +256,36 @@ class CameraLifecycleCore {
     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
     return CleanupLocked();
   }
+  // ROS worker通过单一公共入口提交publish结果，core内部持有每相机metrics并校验边界。
+  void RecordPublishSuccess(uint32_t camera_id, uint64_t latency_ns) noexcept {
+    if (config_.rate_metrics_enabled && camera_id < kMaxCameras) {
+      camera_metrics_[camera_id].RecordPublishSuccess(latency_ns);
+    }
+  }
+  // 主/辅助ROS publish异常统一计入同一门禁，并由调用栈继续触发既有fail-closed。
+  void RecordPublishFailure(uint32_t camera_id) noexcept {
+    if (config_.rate_metrics_enabled && camera_id < kMaxCameras) {
+      camera_metrics_[camera_id].RecordPublishFailure();
+    }
+  }
+
+
+  // CameraInfo是辅助topic，单独提交成功计数，避免污染Image主topic频率。
+  void RecordAuxiliaryPublishSuccess(uint32_t camera_id) noexcept {
+    if (config_.rate_metrics_enabled && camera_id < kMaxCameras) {
+      camera_metrics_[camera_id].RecordAuxiliaryPublishSuccess();
+    }
+  }
+
+  // timer仅读取累计atomic snapshot；返回值按值复制，避免把metrics锁或生命周期暴露到ROS层。
+  robobaton_4p_ros2_demo::PublicationRateSnapshot Snapshot(
+      uint32_t camera_id, uint64_t monotonic_ns) const noexcept {
+    if (camera_id >= kMaxCameras) {
+      return {};
+    }
+    return camera_metrics_[camera_id].Snapshot(monotonic_ns);
+  }
+
 
   bool failed() const noexcept { return failed_.load(std::memory_order_acquire); }
 
@@ -357,6 +391,13 @@ class CameraLifecycleCore {
           info.stride == 0U || info.vstride == 0U) {
         throw std::runtime_error("invalid frame metadata");
       }
+      // 指标定义为最终 callback 所见的 producer 连续性；
+      // 记录真实 sequence，使聚合器丢弃过的 producer 帧继续表现为 source gap，而非被 group_id 掩盖。
+      if (config_.rate_metrics_enabled) {
+        camera_metrics_[camera_id].RecordSource(
+            info.sequence, info.timestamp_ns, SteadyNowNs());
+
+      }
       sc132_frame_t* frame = item.frame;
       const int32_t retain_status = sc132_frame_retain(frame);  // RELEASE008_RETAIN_CALL
       if (retain_status != SC132_STATUS_OK) {
@@ -364,6 +405,9 @@ class CameraLifecycleCore {
       }
       RetainedFrameJob job(frame, info);
       if (!queues_[camera_id]->Push(std::move(job))) {
+        if (config_.rate_metrics_enabled) {
+          camera_metrics_[camera_id].RecordDrop();
+        }
         continue;
       }
     }
@@ -383,6 +427,14 @@ class CameraLifecycleCore {
       CloseAdmissionAndRequestStop();
     }
   }
+
+  // 统一使用CLOCK_MONOTONIC同源的steady_clock纳秒，避免ROS/wall时间调整污染耗时证据。
+  static uint64_t SteadyNowNs() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+  }
+
 
   void RecordFailure() noexcept {
     const bool first = !failed_.exchange(true, std::memory_order_acq_rel);
@@ -490,6 +542,11 @@ class CameraLifecycleCore {
   FailureNotifier failure_notifier_;
   std::array<std::unique_ptr<FrameQueue>, kMaxCameras> queues_{};
   std::array<std::thread, kMaxCameras> workers_{};
+  std::array<robobaton_4p_ros2_demo::PublicationRateMetrics, kMaxCameras> camera_metrics_{
+      robobaton_4p_ros2_demo::PublicationRateMetrics(robobaton_4p_ros2_demo::SequenceWidth::k64Bit),
+      robobaton_4p_ros2_demo::PublicationRateMetrics(robobaton_4p_ros2_demo::SequenceWidth::k64Bit),
+      robobaton_4p_ros2_demo::PublicationRateMetrics(robobaton_4p_ros2_demo::SequenceWidth::k64Bit),
+      robobaton_4p_ros2_demo::PublicationRateMetrics(robobaton_4p_ros2_demo::SequenceWidth::k64Bit)};
   std::mutex lifecycle_mutex_;
   std::atomic<bool> failed_{false};
   std::atomic<bool> accepting_closed_{false};
@@ -516,6 +573,7 @@ struct CameraHarness {
   CameraLifecycleCore core;
   CameraHarnessConfig config;
   std::atomic<bool> throw_in_worker{false};
+  std::atomic<bool> throw_in_auxiliary_publish{false};
 };
 
 void* CameraHarnessCreate(const CameraHarnessConfig& config) {
@@ -535,13 +593,25 @@ bool CameraHarnessStart(void* opaque) {
   config.timeout_ms = harness->config.timeout_ms;
   config.max_skew_ns = harness->config.max_skew_ns;
   config.queue_capacity = harness->config.queue_capacity;
+  config.rate_metrics_enabled = harness->config.rate_metrics_enabled;
   return harness->core.Start(
       config,
-      [harness](const RetainedFrameJob&) {
-        if (harness->throw_in_worker.exchange(false)) {
-          throw std::runtime_error("injected worker failure");
+      [harness](const RetainedFrameJob& job) {
+        const uint32_t camera_id = job.info().camera_id;
+        // host harness按production顺序模拟主/辅助发布，验证任一异常都会计数后rethrow。
+        try {
+          if (harness->throw_in_worker.exchange(false)) {
+            throw std::runtime_error("injected image publish failure");
+          }
+          harness->core.RecordPublishSuccess(camera_id, 25U);
+          if (harness->throw_in_auxiliary_publish.exchange(false)) {
+            throw std::runtime_error("injected camera info publish failure");
+          }
+          harness->core.RecordAuxiliaryPublishSuccess(camera_id);
+        } catch (...) {
+          harness->core.RecordPublishFailure(camera_id);
+          throw;
         }
-        RecordContractEvent("consumer.sc.publish");
       },
       [] {});
 }
@@ -564,12 +634,21 @@ void CameraHarnessThrowInWorker(void* opaque) {
   static_cast<CameraHarness*>(opaque)->throw_in_worker.store(true);
 }
 
+void CameraHarnessThrowInAuxiliaryPublish(void* opaque) {
+  static_cast<CameraHarness*>(opaque)->throw_in_auxiliary_publish.store(true);
+}
+
 void CameraHarnessFailJoin(void* opaque) {
   static_cast<CameraHarness*>(opaque)->core.FailJoin();
 }
 
 bool CameraHarnessFailed(void* opaque) {
   return static_cast<CameraHarness*>(opaque)->core.failed();
+}
+
+robobaton_4p_ros2_demo::PublicationRateSnapshot CameraHarnessSnapshot(
+    void* opaque, uint32_t camera_id, uint64_t monotonic_ns) {
+  return static_cast<CameraHarness*>(opaque)->core.Snapshot(camera_id, monotonic_ns);
 }
 
 }  // namespace release008_test
@@ -602,7 +681,8 @@ class CameraPublisher::Impl {
  public:
   Impl(rclcpp::Node* node, Config config)
       : node_(node), config_(std::move(config)), core_(ProcessCameraCore()) {
-    if (node_ == nullptr || config_.queue_capacity == 0U || config_.image_encoding != "nv12") {
+    if (node_ == nullptr || config_.queue_capacity == 0U || config_.image_encoding != "nv12" ||
+        (config_.rate_metrics_enabled && config_.rate_log_period_ms == 0U)) {
       throw std::invalid_argument("invalid camera publisher configuration");
     }
     auto image_qos = rclcpp::SensorDataQoS();
@@ -639,6 +719,7 @@ class CameraPublisher::Impl {
     core_config.max_skew_ns = config_.options.frame_set_max_skew_ns;
     core_config.queue_capacity = config_.queue_capacity;
     core_config.drop_newest = config_.queue_policy == QueuePolicy::kDropNewest;
+    core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
     if (!core_.Start(
             core_config,
             [this](const RetainedFrameJob& job) { PublishFrame(job); },
@@ -652,9 +733,17 @@ class CameraPublisher::Impl {
     started_ = true;
     RCLCPP_INFO(node_->get_logger(), "Started SC132 camera publisher mask=0x%X",
                 config_.options.camera_mask);
+    if (config_.rate_metrics_enabled) {
+      previous_snapshots_.fill({});
+      const auto period = std::chrono::milliseconds(config_.rate_log_period_ms);
+      rate_timer_ = rclcpp::create_wall_timer(
+          period, [this] { LogRateMetrics(); }, nullptr, node_->get_node_base_interface().get(),
+          node_->get_node_timers_interface().get());
+    }
   }
 
   void Stop() noexcept {
+    rate_timer_.reset();
     if (!started_ && !core_.failed()) {
       return;
     }
@@ -670,6 +759,52 @@ class CameraPublisher::Impl {
   }
 
  private:
+  // 固定schema的单行JSON直接进入node stderr证据；默认关闭时不会创建timer或产生额外日志。
+  void LogRateMetrics() {
+    const uint64_t now_ns = SteadyNowNs();
+    for (uint32_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
+      if (!robobaton_demo::CameraMaskContains(config_.options.camera_mask,
+                                               static_cast<int>(camera_id))) {
+        continue;
+      }
+      const auto current = core_.Snapshot(camera_id, now_ns);
+      const auto delta = robobaton_4p_ros2_demo::PublicationRateMetrics::Delta(
+          previous_snapshots_[camera_id], current);
+      previous_snapshots_[camera_id] = current;
+
+      // 首个窗口从producer首样本开始，之后严格使用相邻timer边界；保留原始count和ns供主机复算。
+      const uint64_t interval_start = delta.interval_start_monotonic_ns == 0U
+                                          ? current.interval_start_monotonic_ns
+                                          : delta.interval_start_monotonic_ns;
+      RCLCPP_INFO(
+          node_->get_logger(),
+          "ROB2_RATE {\"schema\":\"robobaton-rate-v1\",\"run_id\":\"%s\",\"kind\":\"camera\",\"id\":%u,\"interval_start_monotonic_ns\":%llu,\"interval_end_monotonic_ns\":%llu,\"source\":%llu,\"published\":%llu,\"auxiliary_published\":%llu,\"dropped\":%llu,\"publish_failures\":%llu,\"sequence_gaps\":%llu,\"sequence_duplicates\":%llu,\"sequence_regressions\":%llu,\"timestamp_duplicates\":%llu,\"timestamp_regressions\":%llu,\"publish_latency_count\":%llu,\"publish_latency_sum_ns\":%llu,\"publish_latency_max_ns\":%llu}",
+          config_.rate_run_id.c_str(), camera_id,
+          static_cast<unsigned long long>(interval_start),
+          static_cast<unsigned long long>(delta.interval_end_monotonic_ns),
+          static_cast<unsigned long long>(delta.source_count),
+          static_cast<unsigned long long>(delta.publish_count),
+          static_cast<unsigned long long>(delta.auxiliary_publish_count),
+          static_cast<unsigned long long>(delta.drop_count),
+          static_cast<unsigned long long>(delta.publish_failure_count),
+          static_cast<unsigned long long>(delta.sequence_gap_count),
+          static_cast<unsigned long long>(delta.sequence_duplicate_count),
+          static_cast<unsigned long long>(delta.sequence_regression_count),
+          static_cast<unsigned long long>(delta.timestamp_duplicate_count),
+          static_cast<unsigned long long>(delta.timestamp_regression_count),
+          static_cast<unsigned long long>(delta.publish_latency_count),
+          static_cast<unsigned long long>(delta.publish_latency_sum_ns),
+          static_cast<unsigned long long>(delta.publish_latency_max_ns));
+    }
+  }
+
+  // ROS publish耗时采用steady clock，不受ROS仿真时间或wall clock校时影响。
+  static uint64_t SteadyNowNs() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+  }
+
   void PublishFrame(const RetainedFrameJob& job) {
     const auto& info = job.info();
     if (!job.owns_frame() || info.y_size > std::numeric_limits<std::size_t>::max() ||
@@ -694,14 +829,30 @@ class CameraPublisher::Impl {
     image.data.resize(y_size + uv_size);
     std::memcpy(image.data.data(), info.y_data, y_size);
     std::memcpy(image.data.data() + y_size, info.uv_data, uv_size);
-    image_publishers_[camera_id]->publish(image);
-    if (camera_info_publishers_[camera_id]) {
-      sensor_msgs::msg::CameraInfo camera_info;
-      camera_info.header = image.header;
-      camera_info.width = image.width;
-      camera_info.height = image.height;
-      camera_info_publishers_[camera_id]->publish(camera_info);
+    // 主Image或辅助CameraInfo任一publish异常都先计数再rethrow，保留worker既有fail-closed语义。
+    try {
+      if (config_.rate_metrics_enabled) {
+        const uint64_t publish_start_ns = SteadyNowNs();
+        image_publishers_[camera_id]->publish(image);
+        core_.RecordPublishSuccess(camera_id, SteadyNowNs() - publish_start_ns);
+      } else {
+        image_publishers_[camera_id]->publish(image);
+      }
+      if (camera_info_publishers_[camera_id]) {
+        sensor_msgs::msg::CameraInfo camera_info;
+        camera_info.header = image.header;
+        camera_info.width = image.width;
+        camera_info.height = image.height;
+        camera_info_publishers_[camera_id]->publish(camera_info);
+        if (config_.rate_metrics_enabled) {
+          core_.RecordAuxiliaryPublishSuccess(camera_id);
+        }
+      }
+    } catch (...) {
+      core_.RecordPublishFailure(camera_id);
+      throw;
     }
+
   }
 
   rclcpp::Node* node_;
@@ -712,6 +863,9 @@ class CameraPublisher::Impl {
       image_publishers_{};
   std::array<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr, kMaxCameras>
       camera_info_publishers_{};
+  rclcpp::TimerBase::SharedPtr rate_timer_;
+  std::array<robobaton_4p_ros2_demo::PublicationRateSnapshot, kMaxCameras>
+      previous_snapshots_{};
 };
 
 CameraPublisher::CameraPublisher(rclcpp::Node* node, Config config)

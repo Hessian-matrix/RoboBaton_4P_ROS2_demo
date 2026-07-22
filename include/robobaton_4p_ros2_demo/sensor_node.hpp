@@ -19,9 +19,15 @@ class SensorNode : public rclcpp::Node {
   void StopPublishers();
   CameraPublisher::Config LoadCameraConfig();
   ImuPublisher::Config LoadImuConfig();
+  bool LoadRateMetricsEnabled();
+  uint32_t LoadRateLogPeriodMs();
+  std::string LoadRateRunId();
 
   bool enable_camera_ = true;
   bool enable_imu_ = true;
+  bool rate_metrics_enabled_ = false;
+  uint32_t rate_log_period_ms_ = 1000U;
+  std::string rate_run_id_;
   std::unique_ptr<CameraPublisher> camera_publisher_;
   std::unique_ptr<ImuPublisher> imu_publisher_;
 };

@@ -4,6 +4,11 @@ robobaton_sensors_node:
     enable_imu: true
     timestamp_source: "ros_now"
 
+    diagnostics:
+      rate_metrics_enabled: false
+      rate_log_period_ms: 1000
+      rate_run_id: ""
+
     camera:
       camera_mask: 15
       fps: 60

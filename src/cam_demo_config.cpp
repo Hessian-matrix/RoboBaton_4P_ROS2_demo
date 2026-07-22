@@ -9,6 +9,8 @@ namespace {
 
 constexpr const char* kSc132SensorProfileEnv = "SC132_SENSOR_PROFILE";
 constexpr const char* kSc132TriggerModeEnv = "SC132_TRIGGER_MODE";
+constexpr const char* kSc132Single30FpsProfile =
+    "sc132gs_linear_1088x1280_raw10_30fps_1lane";
 constexpr const char* kSc132Single60FpsProfile =
     "sc132gs_linear_1088x1280_raw10_60fps_1lane";
 
@@ -26,9 +28,8 @@ void ConfigureSc132TriggerMode(const Options& options) {
             << " (GPIO417 is used when mode=software_gpio)\n";
 }
 
-// 功能：为内部单颗 sensor smoke 自动补齐 60fps sensor profile。
-// 输入：options.camera_mask/options.fps。
-// 副作用：当内部诊断只启用一颗 sensor 且未预设 SC132_SENSOR_PROFILE 时设置兼容 profile。
+// 单颗30/60fps分别使用匹配sensor/MIPI时序的master profile，不修改四路默认profile选择。
+// 显式SC132_SENSOR_PROFILE优先且不覆盖；自动选择仅修改当前进程环境，供后续libsc132初始化读取。
 void ConfigureSc132SensorProfile(const Options& options) {
   const char* current_profile = std::getenv(kSc132SensorProfileEnv);
   if (current_profile != nullptr && current_profile[0] != '\0') {
@@ -36,16 +37,18 @@ void ConfigureSc132SensorProfile(const Options& options) {
     return;
   }
 
-  // 四路同步使用 libsc132 默认 profile；单颗 60fps 需要匹配 SDK pipeline 的 1-lane profile。
-  if (CameraMaskPopCount(options.camera_mask) != 1 || options.fps != 60) {
+  // 单颗 sensor 必须用 master profile；30fps slave-right 在当前板卡 vflow_start 返回 -36。
+  if (CameraMaskPopCount(options.camera_mask) != 1) {
     return;
   }
 
-  // setenv 仅影响当前进程，不修改板端全局 shell 环境。
-  if (setenv(kSc132SensorProfileEnv, kSc132Single60FpsProfile, 1) != 0) {
+  // 30/60fps必须匹配profile内部sensor和MIPI时序，不能仅靠GPIO节拍限帧。
+  const char* profile = options.fps == 30 ? kSc132Single30FpsProfile
+                                          : kSc132Single60FpsProfile;
+  if (setenv(kSc132SensorProfileEnv, profile, 1) != 0) {
     throw std::runtime_error("set SC132_SENSOR_PROFILE failed");
   }
-  std::cout << "Auto selected single-sensor 60fps profile\n";
+  std::cout << "Auto selected single-sensor " << options.fps << "fps profile\n";
 }
 
 }  // namespace robobaton_demo

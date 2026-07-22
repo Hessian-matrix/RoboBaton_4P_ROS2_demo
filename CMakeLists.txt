@@ -58,6 +58,7 @@ set_target_properties(robobaton_sc132 PROPERTIES
 add_executable(robobaton_sensors_node
   src/camera_publisher.cpp
   src/imu_publisher.cpp
+  src/publication_rate_metrics.cpp
   src/robobaton_sensors_node.cpp
   src/cam_demo_common.cpp
   src/cam_demo_config.cpp)

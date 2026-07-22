@@ -45,9 +45,9 @@ bool CameraMaskContains(uint32_t camera_mask, int camera_id);
 // 输出：传给 libsc132 的真实旋转角度。
 int InternalRotateDegrees(const Options& options);
 
-// 2026-07-17 修改原因：按传给 libsc132 的真实旋转角度返回 producer 帧宽度；纯计算，无副作用。
+// 按传给 libsc132 的真实旋转角度返回 producer 帧宽度；纯计算，无副作用。
 uint32_t Sc132OutputWidth(const Options& options);
-// 2026-07-17 修改原因：按传给 libsc132 的真实旋转角度返回 producer 帧高度；纯计算，无副作用。
+// 按传给 libsc132 的真实旋转角度返回 producer 帧高度；纯计算，无副作用。
 uint32_t Sc132OutputHeight(const Options& options);
 
 }  // namespace robobaton_demo

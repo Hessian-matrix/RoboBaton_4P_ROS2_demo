@@ -25,6 +25,9 @@ class CameraPublisher {
     bool publish_camera_info = true;
     std::string image_encoding = "nv12";
     std::string frame_id_prefix = "robobaton_cam";
+    bool rate_metrics_enabled = false;
+    uint32_t rate_log_period_ms = 1000U;
+    std::string rate_run_id;
   };
 
   // 节点统一管理生命周期；本类只封装 X5 相机采集与 ROS 发布资源。

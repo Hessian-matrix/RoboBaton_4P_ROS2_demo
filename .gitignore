@@ -3,3 +3,5 @@ build/
 log/
 install/
 1.ros2_build/
+*.pyc
+AGENTS.md

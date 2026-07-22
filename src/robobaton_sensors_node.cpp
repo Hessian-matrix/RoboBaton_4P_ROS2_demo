@@ -99,6 +99,10 @@ SensorNode::SensorNode(const rclcpp::NodeOptions& options)
   if (timestamp_source != "ros_now") {
     throw std::invalid_argument("timestamp_source only supports ros_now");
   }
+  // 三个诊断参数由节点统一声明，确保Camera和IMU使用同一run ID与窗口周期。
+  rate_metrics_enabled_ = LoadRateMetricsEnabled();
+  rate_log_period_ms_ = LoadRateLogPeriodMs();
+  rate_run_id_ = LoadRateRunId();
   StartEnabledPublishers();
 }
 
@@ -126,6 +130,35 @@ void SensorNode::StopPublishers() {
   }
 }
 
+// 默认关闭内部频率指标；关闭时publisher不创建timer也不输出ROB2_RATE日志。
+bool SensorNode::LoadRateMetricsEnabled() {
+  return DeclareBool(this, "diagnostics.rate_metrics_enabled", false);
+}
+
+uint32_t SensorNode::LoadRateLogPeriodMs() {
+  const uint32_t period_ms =
+      DeclareUint32(this, "diagnostics.rate_log_period_ms", 1000U);
+  if (rate_metrics_enabled_ && period_ms == 0U) {
+    throw std::invalid_argument("diagnostics.rate_log_period_ms must be positive when enabled");
+  }
+  return period_ms;
+}
+
+std::string SensorNode::LoadRateRunId() {
+  // run ID直接进入单行JSON日志；仅接受可打印安全标识字符，禁止引号、反斜杠和换行破坏证据。
+  const std::string run_id = DeclareString(this, "diagnostics.rate_run_id", "");
+  for (const unsigned char value : run_id) {
+    const bool safe = (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+                      (value >= '0' && value <= '9') || value == '-' || value == '_' ||
+                      value == '.' || value == ':';
+    if (!safe) {
+      throw std::invalid_argument(
+          "diagnostics.rate_run_id accepts only ASCII alnum and -_.:");
+    }
+  }
+  return run_id;
+}
+
 CameraPublisher::Config SensorNode::LoadCameraConfig() {
   CameraPublisher::Config config;
   auto& options = config.options;
@@ -147,6 +180,9 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
   config.image_encoding = DeclareString(this, "camera.image_encoding", "nv12");
   config.frame_id_prefix =
       DeclareString(this, "camera.frame_id_prefix", "robobaton_cam");
+  config.rate_metrics_enabled = rate_metrics_enabled_;
+  config.rate_log_period_ms = rate_log_period_ms_;
+  config.rate_run_id = rate_run_id_;
   return config;
 }
 
@@ -158,6 +194,9 @@ ImuPublisher::Config SensorNode::LoadImuConfig() {
       DeclareUint32(this, "imu.fifo_watermark_samples", 8U);
   config.frame_id = DeclareString(this, "imu.frame_id", "robobaton_imu_link");
   config.publish_temperature = DeclareBool(this, "imu.publish_temperature", true);
+  config.rate_metrics_enabled = rate_metrics_enabled_;
+  config.rate_log_period_ms = rate_log_period_ms_;
+  config.rate_run_id = rate_run_id_;
   return config;
 }
 
