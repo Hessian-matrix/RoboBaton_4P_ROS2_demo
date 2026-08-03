@@ -1,4 +1,9 @@
-# 板端缺失的 spdlog/fmt/tinyxml2/OpenSSL 运行库由本包 lib 目录补充。
+# 板端缺失的 ROS2/Python 转发库由本包 lib 目录补充；X5 ISP 传递依赖从系统库目录解析。
 if [ -d "$AMENT_CURRENT_PREFIX/lib/@PROJECT_NAME@" ]; then
   ament_prepend_unique_value LD_LIBRARY_PATH "$AMENT_CURRENT_PREFIX/lib/@PROJECT_NAME@"
 fi
+for robobaton_system_lib_dir in /usr/lib /usr/lib/sensor; do
+  if [ -d "$robobaton_system_lib_dir" ]; then
+    ament_prepend_unique_value LD_LIBRARY_PATH "$robobaton_system_lib_dir"
+  fi
+done

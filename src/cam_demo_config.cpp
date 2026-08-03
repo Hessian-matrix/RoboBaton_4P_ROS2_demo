@@ -16,8 +16,52 @@ constexpr const char* kSc132Single60FpsProfile =
 
 }  // namespace
 
+void ValidateCameraOptions(const Options& options) {
+  switch (options.camera_mask) {
+    case 0x1U:
+    case 0x2U:
+    case 0x4U:
+    case 0x8U:
+    case 0xFU:
+      break;
+    default:
+      throw std::invalid_argument("camera.camera_mask supports only 1, 2, 4, 8, or 15");
+  }
+
+  switch (options.fps) {
+    case 25:
+    case 30:
+    case 40:
+    case 50:
+    case 60:
+      break;
+    default:
+      throw std::invalid_argument("camera.fps must be one of 25, 30, 40, 50, or 60");
+  }
+
+  switch (options.rotate_degrees) {
+    case 0:
+    case 90:
+    case 180:
+    case 270:
+      break;
+    default:
+      throw std::invalid_argument("camera.rotate_degrees must be 0, 90, 180, or 270");
+  }
+  if (options.rotate_degrees == 180 && options.fps != 30) {
+    throw std::invalid_argument("camera.rotate_degrees=180 is supported only at 30fps");
+  }
+  if (options.frame_set_timeout_ms == 0U || options.frame_set_max_skew_ns == 0U) {
+    throw std::invalid_argument("camera frame-set timeout and max skew must be positive");
+  }
+  if (options.trigger_mode != "software_gpio" && options.trigger_mode != "vin_lpwm" &&
+      options.trigger_mode != "none") {
+    throw std::invalid_argument("camera.trigger_mode must be software_gpio, vin_lpwm, or none");
+  }
+}
+
 // 功能：把 ROS 参数选择的触发模式写入 libsc132 使用的环境变量。
-// 输入：options.trigger_mode，支持 software_gpio、vin_lpwm、none 等已验证值。
+// 输入：options.trigger_mode，接受 software_gpio、vin_lpwm、none；V1仅验证software_gpio。
 // 副作用：覆盖当前进程的 SC132_TRIGGER_MODE；software_gpio 模式使用 GPIO417。
 void ConfigureSc132TriggerMode(const Options& options) {
   // ROS 参数优先于 shell 环境，确保进程按显式配置启动。
@@ -28,7 +72,7 @@ void ConfigureSc132TriggerMode(const Options& options) {
             << " (GPIO417 is used when mode=software_gpio)\n";
 }
 
-// 单颗30/60fps分别使用匹配sensor/MIPI时序的master profile，不修改四路默认profile选择。
+// 单颗30fps使用30fps master profile；25/40/50/60fps使用60fps base master profile并由libsc132写入目标VTS。
 // 显式SC132_SENSOR_PROFILE优先且不覆盖；自动选择仅修改当前进程环境，供后续libsc132初始化读取。
 void ConfigureSc132SensorProfile(const Options& options) {
   const char* current_profile = std::getenv(kSc132SensorProfileEnv);
@@ -42,7 +86,7 @@ void ConfigureSc132SensorProfile(const Options& options) {
     return;
   }
 
-  // 30/60fps必须匹配profile内部sensor和MIPI时序，不能仅靠GPIO节拍限帧。
+  // 30fps和60fps base profile必须匹配sensor/MIPI时序，其他离散帧率由60fps base profile派生。
   const char* profile = options.fps == 30 ? kSc132Single30FpsProfile
                                           : kSc132Single60FpsProfile;
   if (setenv(kSc132SensorProfileEnv, profile, 1) != 0) {

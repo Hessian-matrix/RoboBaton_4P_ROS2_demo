@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>robobaton_4p_ros2_demo</name>
-  <version>0.1.0</version>
+  <version>1.0.0</version>
   <description>ROS2 demo that publishes RoboBaton 4P SC132 camera images and ICM-42688 IMU samples.</description>
   <maintainer email="support@example.com">RoboBaton</maintainer>
   <license>Proprietary</license>
@@ -11,6 +11,9 @@
 
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>image_transport</depend>
+  <depend>pluginlib</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

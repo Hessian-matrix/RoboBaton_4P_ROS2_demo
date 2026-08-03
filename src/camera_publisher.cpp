@@ -3,14 +3,19 @@
 #else
 #include "robobaton_4p_ros2_demo/camera_publisher.hpp"
 #include "robobaton_4p_ros2_demo/cam_demo_config.h"
-#include <sensor_msgs/msg/camera_info.hpp>
+#include "robobaton_4p_ros2_demo/timestamp_mapper.hpp"
 #include "robobaton_4p_ros2_demo/publication_rate_metrics.hpp"
+
+#include <image_transport/image_transport.hpp>
 #include <rclcpp/create_timer.hpp>
+#include <rclcpp/expand_topic_or_service_name.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #endif
 
 #include "robobaton_4p_ros2_demo/sc132camera.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <atomic>
@@ -31,6 +36,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #ifndef RELEASE008_CONTRACT_TEST
 namespace robobaton_4p_ros2_demo {
@@ -187,6 +193,7 @@ class FrameQueue {
   bool fail_next_allocation_ = false;
 #endif
 };
+
 
 class CameraLifecycleCore {
  public:
@@ -661,12 +668,67 @@ namespace {
 constexpr char kImageTopicSuffix[] = "/image_raw";
 constexpr char kCameraInfoTopicSuffix[] = "/camera_info";
 
+bool Sc132TimestampsAreMonotonicRaw(const robobaton_demo::Options& options) noexcept {
+  return options.trigger_mode == "software_gpio" || options.trigger_mode == "gpio";
+}
+
+const SensorTimestampMapper& RequireTimestampMapper(const SensorTimestampMapper* mapper) {
+  if (mapper == nullptr) {
+    throw std::invalid_argument("camera publisher requires a timestamp mapper");
+  }
+  return *mapper;
+}
+
 std::string CameraTopic(uint32_t camera_id, const char* suffix) {
   return "/robobaton/cam" + std::to_string(camera_id) + suffix;
 }
 
 std::string CameraFrameId(const std::string& prefix, uint32_t camera_id) {
   return prefix + std::to_string(camera_id) + "_optical_frame";
+}
+
+std::string ImageTransportParameterBase(rclcpp::Node* node, const std::string& base_topic) {
+  std::string expanded_topic = rclcpp::expand_topic_or_service_name(
+      base_topic, node->get_name(), node->get_namespace());
+  const auto namespace_length = node->get_effective_namespace().length();
+  if (expanded_topic.size() >= namespace_length) {
+    expanded_topic = expanded_topic.substr(namespace_length);
+  }
+  std::replace(expanded_topic.begin(), expanded_topic.end(), '/', '.');
+  if (!expanded_topic.empty() && expanded_topic.front() == '.') {
+    expanded_topic.erase(0, 1);
+  }
+  return expanded_topic;
+}
+
+template <typename T>
+void DeclareOrSetImageTransportParameter(rclcpp::Node* node, const std::string& name,
+                                         const T& value) {
+  if (!node->has_parameter(name)) {
+    (void)node->declare_parameter<T>(name, value);
+    return;
+  }
+  const auto result = node->set_parameter(rclcpp::Parameter(name, value));
+  if (!result.successful) {
+    throw std::invalid_argument("failed to set image_transport parameter " + name + ": " +
+                                result.reason);
+  }
+}
+
+void ConfigureImageTransportPublisher(rclcpp::Node* node, const std::string& base_topic,
+                                      bool compressed_enabled, int jpeg_quality) {
+  std::vector<std::string> enabled_plugins{"image_transport/raw"};
+  if (compressed_enabled) {
+    enabled_plugins.emplace_back("robobaton_4p_ros2_demo/compressed");
+  }
+  const std::string parameter_base = ImageTransportParameterBase(node, base_topic);
+  // 参数名镜像image_transport内部规则，避免安装额外transport插件后自动暴露非交付topic。
+  DeclareOrSetImageTransportParameter(node, parameter_base + ".enable_pub_plugins",
+                                      enabled_plugins);
+  if (compressed_enabled) {
+    DeclareOrSetImageTransportParameter(node, parameter_base + ".jpeg_quality",
+                                        static_cast<int64_t>(jpeg_quality));
+  }
 }
 
 CameraLifecycleCore& ProcessCameraCore() {
@@ -680,21 +742,26 @@ CameraLifecycleCore& ProcessCameraCore() {
 class CameraPublisher::Impl {
  public:
   Impl(rclcpp::Node* node, Config config)
-      : node_(node), config_(std::move(config)), core_(ProcessCameraCore()) {
+      : node_(node), config_(std::move(config)),
+        timestamp_mapper_(RequireTimestampMapper(config_.timestamp_mapper)),
+        core_(ProcessCameraCore()) {
     if (node_ == nullptr || config_.queue_capacity == 0U || config_.image_encoding != "nv12" ||
+        config_.compressed_jpeg_quality < 1 || config_.compressed_jpeg_quality > 100 ||
         (config_.rate_metrics_enabled && config_.rate_log_period_ms == 0U)) {
       throw std::invalid_argument("invalid camera publisher configuration");
     }
-    auto image_qos = rclcpp::SensorDataQoS();
-    image_qos.keep_last(2);
+    auto image_qos = rclcpp::SensorDataQoS().reliable().keep_last(8);
     auto info_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
     for (uint32_t camera_id = 0; camera_id < kMaxCameras; ++camera_id) {
       if (!robobaton_demo::CameraMaskContains(config_.options.camera_mask,
                                                static_cast<int>(camera_id))) {
         continue;
       }
-      image_publishers_[camera_id] = node_->create_publisher<sensor_msgs::msg::Image>(
-          CameraTopic(camera_id, kImageTopicSuffix), image_qos);
+      const std::string image_topic = CameraTopic(camera_id, kImageTopicSuffix);
+      ConfigureImageTransportPublisher(node_, image_topic, config_.publish_compressed_image,
+                                       config_.compressed_jpeg_quality);
+      image_publishers_[camera_id] = image_transport::create_publisher(
+          node_, image_topic, image_qos.get_rmw_qos_profile());
       if (config_.publish_camera_info) {
         camera_info_publishers_[camera_id] =
             node_->create_publisher<sensor_msgs::msg::CameraInfo>(
@@ -706,6 +773,7 @@ class CameraPublisher::Impl {
   ~Impl() { Stop(); }
 
   void Start() {
+    robobaton_demo::ValidateCameraOptions(config_.options);
     robobaton_demo::ConfigureSc132TriggerMode(config_.options);
     robobaton_demo::ConfigureSc132SensorProfile(config_.options);
     CameraCoreConfig core_config;
@@ -805,6 +873,14 @@ class CameraPublisher::Impl {
                                      .count());
   }
 
+  RosStampParts HeaderStampFromFrame(const sc132_frame_info_t& info) const {
+    if (Sc132TimestampsAreMonotonicRaw(config_.options)) {
+      return ToRosStampParts(
+          timestamp_mapper_.MapMonotonicRawToRealtimeNs(info.timestamp_ns));
+    }
+    return ToRosStampParts(info.timestamp_ns);
+  }
+
   void PublishFrame(const RetainedFrameJob& job) {
     const auto& info = job.info();
     if (!job.owns_frame() || info.y_size > std::numeric_limits<std::size_t>::max() ||
@@ -817,7 +893,7 @@ class CameraPublisher::Impl {
       throw std::runtime_error("invalid SC132 camera id");
     }
     sensor_msgs::msg::Image image;
-    image.header.stamp = node_->now();
+    AssignStamp(image.header.stamp, HeaderStampFromFrame(info));
     image.header.frame_id = CameraFrameId(config_.frame_id_prefix, camera_id);
     image.height = info.height;
     image.width = info.width;
@@ -829,14 +905,14 @@ class CameraPublisher::Impl {
     image.data.resize(y_size + uv_size);
     std::memcpy(image.data.data(), info.y_data, y_size);
     std::memcpy(image.data.data() + y_size, info.uv_data, uv_size);
-    // 主Image或辅助CameraInfo任一publish异常都先计数再rethrow，保留worker既有fail-closed语义。
+    // 主Image、压缩Image或辅助CameraInfo任一publish异常都先计数再rethrow，保留worker既有fail-closed语义。
     try {
       if (config_.rate_metrics_enabled) {
         const uint64_t publish_start_ns = SteadyNowNs();
-        image_publishers_[camera_id]->publish(image);
+        image_publishers_[camera_id].publish(image);
         core_.RecordPublishSuccess(camera_id, SteadyNowNs() - publish_start_ns);
       } else {
-        image_publishers_[camera_id]->publish(image);
+        image_publishers_[camera_id].publish(image);
       }
       if (camera_info_publishers_[camera_id]) {
         sensor_msgs::msg::CameraInfo camera_info;
@@ -848,8 +924,13 @@ class CameraPublisher::Impl {
           core_.RecordAuxiliaryPublishSuccess(camera_id);
         }
       }
+    } catch (const std::exception& error) {
+      core_.RecordPublishFailure(camera_id);
+      RCLCPP_ERROR(node_->get_logger(), "SC132 image publish failed: %s", error.what());
+      throw;
     } catch (...) {
       core_.RecordPublishFailure(camera_id);
+      RCLCPP_ERROR(node_->get_logger(), "SC132 image publish failed with unknown exception");
       throw;
     }
 
@@ -857,10 +938,10 @@ class CameraPublisher::Impl {
 
   rclcpp::Node* node_;
   Config config_;
+  const SensorTimestampMapper& timestamp_mapper_;
   CameraLifecycleCore& core_;
   bool started_ = false;
-  std::array<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr, kMaxCameras>
-      image_publishers_{};
+  std::array<image_transport::Publisher, kMaxCameras> image_publishers_{};
   std::array<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr, kMaxCameras>
       camera_info_publishers_{};
   rclcpp::TimerBase::SharedPtr rate_timer_;

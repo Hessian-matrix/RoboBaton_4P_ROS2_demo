@@ -4,6 +4,11 @@
 
 namespace robobaton_demo {
 
+// 功能：在任何硬件或进程环境副作用之前校验ROS相机参数合同。
+// 输入：options；相机仅支持单颗或四颗、25/30/40/50/60fps以及公开旋转集合。
+// 异常：参数或组合不受支持时抛出std::invalid_argument。
+void ValidateCameraOptions(const Options& options);
+
 // 功能：配置 libsc132 触发输出模式。
 // 输入：options.trigger_mode，默认 software_gpio。
 // 副作用：设置进程内环境变量 SC132_TRIGGER_MODE，libsc132 初始化时读取。

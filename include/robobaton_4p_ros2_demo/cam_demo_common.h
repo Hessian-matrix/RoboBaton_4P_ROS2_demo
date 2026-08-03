@@ -10,7 +10,7 @@ namespace robobaton_demo {
 constexpr int kMaxChannels = 4;
 constexpr int kSensorInputWidth = 1088;
 constexpr int kSensorInputHeight = 1280;
-constexpr int kDefaultFps = 60;
+constexpr int kDefaultFps = 30;
 constexpr int kDefaultRotateDegrees = 0;
 constexpr int kMountRotateDegrees = 90;
 constexpr uint32_t kDefaultCameraMask = (1U << kMaxChannels) - 1U;

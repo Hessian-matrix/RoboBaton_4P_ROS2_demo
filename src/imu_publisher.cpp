@@ -4,6 +4,7 @@
 #include "robobaton_4p_ros2_demo/imu_publisher.hpp"
 #include "robobaton_4p_ros2_demo/cam_demo_common.h"
 #include "robobaton_4p_ros2_demo/publication_rate_metrics.hpp"
+#include "robobaton_4p_ros2_demo/timestamp_mapper.hpp"
 #include <rclcpp/create_timer.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/temperature.hpp>
@@ -32,8 +33,8 @@ namespace {
 
 struct ImuCoreConfig {
   uint32_t sample_rate_hz = 1000U;
-  uint32_t fifo_watermark_samples = 8U;
-  uint32_t read_mode = ICM42688_READ_MODE_FIFO;
+  uint32_t fifo_watermark_samples = 1U;
+  uint32_t read_mode = ICM42688_READ_MODE_SENSOR_TIMESTAMP_FIFO;
   bool rate_metrics_enabled = false;
 };
 
@@ -147,7 +148,7 @@ class ImuLifecycleCore {
       }
       // 默认关闭时不读取clock、不进入metrics mutex/atomic；启用后在ROS sink前记录producer输入。
       if (owner->metrics_enabled_) {
-        owner->metrics_.RecordSourceWithoutSequence(sample->host_timestamp_ns,
+        owner->metrics_.RecordSourceWithoutSequence(sample->sample_timestamp_ns,
                                                     SteadyNowNs());
       }
       owner->sink_(*sample);
@@ -177,7 +178,6 @@ class ImuLifecycleCore {
       metrics_.RecordPublishFailure();
     }
   }
-
 
   // Temperature辅助topic独立计数，禁止把主IMU发布频率翻倍。
   void RecordAuxiliaryPublishSuccess() noexcept {
@@ -301,11 +301,20 @@ namespace robobaton_4p_ros2_demo {
 namespace {
 constexpr char kImuTopic[] = "/robobaton/imu/data";
 constexpr char kTemperatureTopic[] = "/robobaton/imu/temperature";
+const SensorTimestampMapper& RequireTimestampMapper(const SensorTimestampMapper* mapper) {
+  if (mapper == nullptr) {
+    throw std::invalid_argument("IMU publisher requires a timestamp mapper");
+  }
+  return *mapper;
+}
+
 }  // namespace
 
 class ImuPublisher::Impl {
  public:
-  Impl(rclcpp::Node* node, Config config) : node_(node), config_(std::move(config)) {
+  Impl(rclcpp::Node* node, Config config)
+      : node_(node), config_(std::move(config)),
+        timestamp_mapper_(RequireTimestampMapper(config_.timestamp_mapper)) {
     if (node_ == nullptr || (config_.rate_metrics_enabled && config_.rate_log_period_ms == 0U)) {
       throw std::invalid_argument("invalid IMU publisher configuration");
     }
@@ -323,8 +332,7 @@ class ImuPublisher::Impl {
     ImuCoreConfig core_config;
     core_config.sample_rate_hz = config_.sample_rate_hz;
     core_config.fifo_watermark_samples = config_.fifo_watermark_samples;
-    core_config.read_mode = config_.direct_read ? ICM42688_READ_MODE_DIRECT
-                                                : ICM42688_READ_MODE_FIFO;
+    core_config.read_mode = ICM42688_READ_MODE_SENSOR_TIMESTAMP_FIFO;
     core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
     if (!core_.Start(
             core_config,
@@ -363,7 +371,7 @@ class ImuPublisher::Impl {
   }
 
  private:
-  // 固定schema单行JSON保存IMU producer/publish/timestamp/latency原始计数，供主机按区间复算。
+  // rate timer只读取metrics snapshot并输出单行JSON；不触碰ICM handle或发布状态。
   void LogRateMetrics() {
     const auto current = core_.Snapshot(SteadyNowNs());
     const auto delta = robobaton_4p_ros2_demo::PublicationRateMetrics::Delta(
@@ -374,12 +382,13 @@ class ImuPublisher::Impl {
                                         : delta.interval_start_monotonic_ns;
     RCLCPP_INFO(
         node_->get_logger(),
-        "ROB2_RATE {\"schema\":\"robobaton-rate-v1\",\"run_id\":\"%s\",\"kind\":\"imu\",\"interval_start_monotonic_ns\":%llu,\"interval_end_monotonic_ns\":%llu,\"source\":%llu,\"published\":%llu,\"auxiliary_published\":%llu,\"publish_failures\":%llu,\"timestamp_duplicates\":%llu,\"timestamp_regressions\":%llu,\"publish_latency_count\":%llu,\"publish_latency_sum_ns\":%llu,\"publish_latency_max_ns\":%llu}",
+        "ROB2_RATE {\"schema\":\"robobaton-rate-v1\",\"run_id\":\"%s\",\"kind\":\"imu\",\"interval_start_monotonic_ns\":%llu,\"interval_end_monotonic_ns\":%llu,\"source\":%llu,\"published\":%llu,\"auxiliary_published\":%llu,\"dropped\":%llu,\"publish_failures\":%llu,\"timestamp_duplicates\":%llu,\"timestamp_regressions\":%llu,\"publish_latency_count\":%llu,\"publish_latency_sum_ns\":%llu,\"publish_latency_max_ns\":%llu}",
         config_.rate_run_id.c_str(), static_cast<unsigned long long>(interval_start),
         static_cast<unsigned long long>(delta.interval_end_monotonic_ns),
         static_cast<unsigned long long>(delta.source_count),
         static_cast<unsigned long long>(delta.publish_count),
         static_cast<unsigned long long>(delta.auxiliary_publish_count),
+        static_cast<unsigned long long>(delta.drop_count),
         static_cast<unsigned long long>(delta.publish_failure_count),
         static_cast<unsigned long long>(delta.timestamp_duplicate_count),
         static_cast<unsigned long long>(delta.timestamp_regression_count),
@@ -394,9 +403,12 @@ class ImuPublisher::Impl {
                                      .count());
   }
 
+  // IMU样本很小，直接在ICM回调线程发布可避免每样本线程唤醒和队列背压丢样。
   void PublishSample(const icm42688_sample_t& sample) {
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp = node_->now();
+    AssignStamp(imu.header.stamp,
+                ToRosStampParts(
+                    timestamp_mapper_.MapMonotonicRawToRealtimeNs(sample.sample_timestamp_ns)));
     imu.header.frame_id = config_.frame_id;
     imu.orientation_covariance[0] = -1.0;
     imu.angular_velocity.x = sample.gyro_rps[0];
@@ -431,6 +443,7 @@ class ImuPublisher::Impl {
 
   rclcpp::Node* node_;
   Config config_;
+  const SensorTimestampMapper& timestamp_mapper_;
   ImuLifecycleCore core_;
   bool started_ = false;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;

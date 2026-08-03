@@ -1,0 +1,10 @@
+# 四路raw NV12高帧率使用FastDDS shared-memory transport，避免本机UDP复制带宽导致DDS history溢出。
+# ament package-level setup提供AMENT_CURRENT_PREFIX；colcon merged install直接source hook时只提供COLCON_CURRENT_PREFIX。
+robobaton_current_prefix="${COLCON_CURRENT_PREFIX:-${AMENT_CURRENT_PREFIX:-}}"
+robobaton_fastdds_profile="$robobaton_current_prefix/share/@PROJECT_NAME@/config/fastdds/robobaton_shm.xml"
+if [ -n "$robobaton_current_prefix" ] && [ -f "$robobaton_fastdds_profile" ]; then
+  export FASTDDS_DEFAULT_PROFILES_FILE="$robobaton_fastdds_profile"
+  export FASTRTPS_DEFAULT_PROFILES_FILE="$robobaton_fastdds_profile"
+fi
+unset robobaton_fastdds_profile
+unset robobaton_current_prefix
