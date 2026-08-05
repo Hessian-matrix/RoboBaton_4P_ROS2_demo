@@ -5,7 +5,7 @@
   <version>1.0.0</version>
   <description>ROS2 demo that publishes RoboBaton 4P SC132 camera images and ICM-42688 IMU samples.</description>
   <maintainer email="support@example.com">RoboBaton</maintainer>
-  <license>Proprietary</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
