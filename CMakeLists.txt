@@ -67,7 +67,7 @@ get_filename_component(DEFAULT_ROBOBATON_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/li
 set(ROBOBATON_LIB_DIR "${DEFAULT_ROBOBATON_LIB_DIR}" CACHE PATH
   "Existing package library directory containing synchronized ABI-v2 producers")
 
-set(ICM42688_REAL "${ROBOBATON_LIB_DIR}/libicm42688.so.2.0.0")
+set(ICM42688_REAL "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.0")
 set(ICM42688_SONAME "${ROBOBATON_LIB_DIR}/libicm42688.so.2")
 set(ICM42688_LINKER "${ROBOBATON_LIB_DIR}/libicm42688.so")
 set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.0")

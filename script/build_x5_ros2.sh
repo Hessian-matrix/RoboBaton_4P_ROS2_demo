@@ -40,7 +40,7 @@ Options:
   -h, --help                      Show this help.
 
 No module-root variables are required. Upstream producer builds must synchronize
-libicm42688.so.2.0.0/.2/unversioned and libsc132.so.2.0.0/.2/unversioned into ./lib.
+libicm42688.so.2.1.0/.2/unversioned and libsc132.so.2.0.0/.2/unversioned into ./lib.
 USAGE
 }
 
@@ -105,7 +105,7 @@ TOOLCHAIN_FILE="$(resolve_existing_file "${TOOLCHAIN_FILE}")"
 ROBOBATON_LIB_DIR="$(resolve_existing_dir "${ROBOBATON_LIB_DIR}")"
 
 for required_file in \
-  "${ROBOBATON_LIB_DIR}/libicm42688.so.2.0.0" \
+  "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.0" \
   "${ROBOBATON_LIB_DIR}/libicm42688.so.2" \
   "${ROBOBATON_LIB_DIR}/libicm42688.so" \
   "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.0" \
