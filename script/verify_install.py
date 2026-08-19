@@ -170,6 +170,8 @@ def required_symbol_versions(spec: dict[str, object]) -> set[str]:
     return set(spec["versions"])
 
 NODE_LIBRARY_KEYS = ("icm42688", "sc132")
+# Node只需声明其实际调用符号的版本；producer仍必须提供完整ABI 2.1版本节点集合。
+NODE_REQUIRED_VERSIONS = {"ICM42688_X5_2.0", "LIBSC132_2.0"}
 PLUGIN_PLATFORM_SONAMES = {"libmultimedia.so.1", "libhbmem.so.1", "libalog.so.1"}
 
 
@@ -258,10 +260,10 @@ def verify(install_dir: Path) -> None:
             f"project DT_NEEDED mismatch: {sorted(project_needed)} != {sorted(expected_project_needed)}"
         )
     node_versions = versions(node)
-    required_versions = set().union(
-        *(required_symbol_versions(LIBRARIES[key]) for key in NODE_LIBRARY_KEYS))
-    if not required_versions.issubset(node_versions):
-        raise AssertionError(f"node version needs missing: {sorted(required_versions - node_versions)}")
+    if not NODE_REQUIRED_VERSIONS.issubset(node_versions):
+        raise AssertionError(
+            f"node version needs missing: {sorted(NODE_REQUIRED_VERSIONS - node_versions)}"
+        )
     old_versions = {value for value in node_versions if value.endswith("_1.0") and
                     value.startswith(("ICM42688_", "LIBSC132_"))}
     if old_versions:

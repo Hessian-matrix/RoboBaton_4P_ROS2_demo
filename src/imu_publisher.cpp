@@ -32,7 +32,7 @@ void RecordProcessFailure() noexcept;
 namespace {
 
 struct ImuCoreConfig {
-  uint32_t sample_rate_hz = 1000U;
+  uint32_t sample_rate_hz = 30U;
   uint32_t fifo_watermark_samples = 1U;
   uint32_t read_mode = ICM42688_READ_MODE_SENSOR_TIMESTAMP_FIFO;
   bool rate_metrics_enabled = false;

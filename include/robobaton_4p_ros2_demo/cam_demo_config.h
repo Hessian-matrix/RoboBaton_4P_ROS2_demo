@@ -5,7 +5,7 @@
 namespace robobaton_demo {
 
 // 功能：在任何硬件或进程环境副作用之前校验ROS相机参数合同。
-// 输入：options；相机仅支持单颗或四颗、25/30/40/50/60fps以及公开旋转集合。
+// 输入：options；相机仅支持单颗或四颗、25/30fps以及公开旋转集合。
 // 异常：参数或组合不受支持时抛出std::invalid_argument。
 void ValidateCameraOptions(const Options& options);
 

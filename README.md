@@ -146,7 +146,7 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 默认订阅 `/robobaton/imu/data`，每秒输出一行：
 
 ```text
-ROB2_IMU_RATE topic=/robobaton/imu/data hz=1000.000 samples=1000 window_s=1.000000 total=1000
+ROB2_IMU_RATE topic=/robobaton/imu/data hz=30.000 samples=30 window_s=1.000000 total=30
 ```
 
 启动后的第一行可能包含 DDS 匹配和半个统计窗口，判断稳定频率时看后续连续多行。
@@ -158,7 +158,7 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor --ros-args \
   -p topic:=/robobaton/imu/data -p report_period_ms:=1000 -p qos_depth:=100
 ```
 
-`ros2 topic hz` 走 Python `rclpy` typed subscriber，会为每条 `sensor_msgs/msg/Imu` 做 Python 消息构造、回调和统计。在 X5 Cortex-A55 当前硬件环境下，它可能低估 1000Hz IMU topic；`robobaton_imu_rate_monitor` 用 C++ 订阅并只在回调里计数，用于证明 ROS2 发布、DDS 传输和 C++ 接收链路正常。`ros2 topic hz` 仍可作为低频 topic 的快速诊断参考，但不要把它作为本包 IMU 1000Hz 发布率门禁。
+`robobaton_imu_rate_monitor`使用C++订阅并按固定窗口计数，用于发布门中的ROS2发布、DDS传输和C++接收链路验证。`ros2 topic hz`仍可用于交互诊断，但正式证据统一使用包内monitor，避免工具口径漂移。
 
 查看话题列表时，可直接用环境脚本运行一次性命令，绕过可能过期的 daemon：
 
@@ -212,8 +212,8 @@ ros2 run robobaton_4p_ros2_demo robobaton_sensors_node --ros-args \
 ## 5. 参数边界
 
 - `camera.camera_mask` 只支持单颗物理相机或完整四路；不支持 2/3 路组合。
-- `camera.fps` 默认 `30`；`25/30/40/50` 是 V1 稳定功能配置；`60` 是显式 `stress-only` 压力配置，不是稳定发布 profile。
-- `camera.rotate_degrees` 只支持 `0/90/180/270`；当前源码对所有 camera mask 的 `25/40/50/60fps` 都拒绝对外 `180` 度旋转。
+- `camera.fps` 默认 `30`，仅支持`25`或`30`；其他值在启动相机前拒绝。
+- `camera.rotate_degrees` 只支持 `0/90/180/270`；当前源码对所有 camera mask 的`25fps`都拒绝对外`180`度旋转。
 - 发布图像和压缩流的画布随对外旋转角变化：`0/180 => 1280x1088`，`90/270 => 1088x1280`；ROS2 raw/compressed 的 `width`/`height` 必须使用对应画布。
 - 第一版不暴露 `camera.width` / `camera.height`。SC132 frame-set 初始化固定使用 sensor 原始尺寸 `kSensorInputWidth/kSensorInputHeight`，ROS `Image.width/height` 使用 libsc132 帧元数据。
 - `camera.image_encoding` 第一版只支持 `nv12`。

@@ -13,7 +13,7 @@ class ImuPublisher {
  public:
   struct Config {
     const SensorTimestampMapper* timestamp_mapper = nullptr;
-    uint32_t sample_rate_hz = 1000U;
+    uint32_t sample_rate_hz = 30U;
     uint32_t fifo_watermark_samples = 1U;
     std::string frame_id = "robobaton_imu_link";
     bool publish_temperature = true;

@@ -24,7 +24,7 @@ robobaton_sensors_node:
       trigger_mode: "software_gpio"
 
     imu:
-      sample_rate_hz: 1000
+      sample_rate_hz: 30
       read_mode: "sensor_timestamp_fifo"
       fifo_watermark_samples: 1
       frame_id: "robobaton_imu_link"

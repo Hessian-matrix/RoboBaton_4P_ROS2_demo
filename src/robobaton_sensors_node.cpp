@@ -197,7 +197,10 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
 ImuPublisher::Config SensorNode::LoadImuConfig() {
   ImuPublisher::Config config;
   config.timestamp_mapper = &timestamp_mapper_;
-  config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 1000U);
+  config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 30U);
+  if (config.sample_rate_hz != 25U && config.sample_rate_hz != 30U) {
+    throw std::invalid_argument("imu.sample_rate_hz only supports 25 or 30");
+  }
   RequireSensorTimestampFifoReadMode(
       DeclareString(this, "imu.read_mode", "sensor_timestamp_fifo"));
   config.fifo_watermark_samples =
