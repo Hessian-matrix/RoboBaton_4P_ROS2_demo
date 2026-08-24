@@ -52,14 +52,13 @@ void ValidateCameraOptions(const Options& options) {
   if (options.frame_set_timeout_ms == 0U || options.frame_set_max_skew_ns == 0U) {
     throw std::invalid_argument("camera frame-set timeout and max skew must be positive");
   }
-  if (options.trigger_mode != "software_gpio" && options.trigger_mode != "vin_lpwm" &&
-      options.trigger_mode != "none") {
-    throw std::invalid_argument("camera.trigger_mode must be software_gpio, vin_lpwm, or none");
+  if (options.trigger_mode != "software_gpio" && options.trigger_mode != "none") {
+    throw std::invalid_argument("camera.trigger_mode must be software_gpio or none");
   }
 }
 
 // 功能：把 ROS 参数选择的触发模式写入 libsc132 使用的环境变量。
-// 输入：options.trigger_mode，接受 software_gpio、vin_lpwm、none；V1仅验证software_gpio。
+// 输入：options.trigger_mode，接受 software_gpio 或 none；V1 仅验证 software_gpio。
 // 副作用：覆盖当前进程的 SC132_TRIGGER_MODE；software_gpio 模式使用 GPIO417。
 void ConfigureSc132TriggerMode(const Options& options) {
   // ROS 参数优先于 shell 环境，确保进程按显式配置启动。

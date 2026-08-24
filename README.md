@@ -219,7 +219,7 @@ ros2 run robobaton_4p_ros2_demo robobaton_sensors_node --ros-args \
 - `camera.image_encoding` 第一版只支持 `nv12`。
 - `camera.publish_compressed_image` 默认启用，通过 `image_transport` 只注册 raw 与 compressed 发布插件；有 `/image_raw/compressed` 订阅者时才把有效NV12行复制到X5 media-codec内部buffer，并以`MEDIA_CODEC_ID_JPEG`执行硬件单帧压缩。
 - `camera.compressed_jpeg_quality` 会写入每路 `image_transport` compressed 插件的 `jpeg_quality` 参数，取值 `1..100`，默认 `80`。
-- `camera.trigger_mode` 默认 `software_gpio`，也是 V1 唯一已验证的稳定模式；`vin_lpwm` 和 `none` 为实验性 / 未验收参数，不属于 V1 稳定合同。
+- `camera.trigger_mode` 默认 `software_gpio`，也是 V1 唯一已验证的稳定模式；`none` 仅用于显式 free-run 诊断，不属于 V1 稳定合同。
 - `imu.read_mode` 只支持 `sensor_timestamp_fifo`；`imu.fifo_watermark_samples` 固定为 `1`，匹配 ICM-42688 sensor timestamp FIFO 映射。
 
 ## 6. 数据语义与限制
