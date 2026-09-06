@@ -146,7 +146,7 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 默认订阅 `/robobaton/imu/data`，每秒输出一行：
 
 ```text
-ROB2_IMU_RATE topic=/robobaton/imu/data hz=30.000 samples=30 window_s=1.000000 total=30
+ROB2_IMU_RATE topic=/robobaton/imu/data hz=1000.000 samples=1000 window_s=1.000000 total=1000
 ```
 
 启动后的第一行可能包含 DDS 匹配和半个统计窗口，判断稳定频率时看后续连续多行。
@@ -220,6 +220,7 @@ ros2 run robobaton_4p_ros2_demo robobaton_sensors_node --ros-args \
 - `camera.publish_compressed_image` 默认启用，通过 `image_transport` 只注册 raw 与 compressed 发布插件；有 `/image_raw/compressed` 订阅者时才把有效NV12行复制到X5 media-codec内部buffer，并以`MEDIA_CODEC_ID_JPEG`执行硬件单帧压缩。
 - `camera.compressed_jpeg_quality` 会写入每路 `image_transport` compressed 插件的 `jpeg_quality` 参数，取值 `1..100`，默认 `80`。
 - `camera.trigger_mode` 默认 `software_gpio`，也是 V1 唯一已验证的稳定模式；`none` 仅用于显式 free-run 诊断，不属于 V1 稳定合同。
+- `imu.sample_rate_hz` 默认 `1000`，仅支持 `25/50/100/200/500/1000/2000`；
 - `imu.read_mode` 只支持 `sensor_timestamp_fifo`；`imu.fifo_watermark_samples` 固定为 `1`，匹配 ICM-42688 sensor timestamp FIFO 映射。
 
 ## 6. 数据语义与限制
