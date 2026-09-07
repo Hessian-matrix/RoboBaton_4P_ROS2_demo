@@ -149,6 +149,12 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 ROB2_IMU_RATE topic=/robobaton/imu/data hz=1000.000 samples=1000 window_s=1.000000 total=1000
 ```
 
+当配置为 `30fps` 时，稳定输出示例为：
+
+```text
+ROB2_IMU_RATE topic=/robobaton/imu/data hz=30.000 samples=30 window_s=1.000000 total=30
+```
+
 启动后的第一行可能包含 DDS 匹配和半个统计窗口，判断稳定频率时看后续连续多行。
 
 常用参数：
