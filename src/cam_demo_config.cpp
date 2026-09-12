@@ -31,10 +31,12 @@ void ValidateCameraOptions(const Options& options) {
   switch (options.fps) {
     case 25:
     case 30:
-
+    case 40:
+    case 50:
+    case 60:
       break;
     default:
-      throw std::invalid_argument("camera.fps must be 25 or 30");
+      throw std::invalid_argument("camera.fps must be 25, 30, 40, 50, or 60");
   }
 
   switch (options.rotate_degrees) {
@@ -69,7 +71,7 @@ void ConfigureSc132TriggerMode(const Options& options) {
             << " (GPIO417 is used when mode=software_gpio)\n";
 }
 
-// 单颗30fps使用30fps master profile；25fps使用兼容的60fps base master profile并由libsc132写入目标VTS。
+// 单颗30fps使用30fps master profile；25/40/50/60fps使用兼容的60fps base master profile并由libsc132写入目标VTS。
 // 显式SC132_SENSOR_PROFILE优先且不覆盖；自动选择仅修改当前进程环境，供后续libsc132初始化读取。
 void ConfigureSc132SensorProfile(const Options& options) {
   const char* current_profile = std::getenv(kSc132SensorProfileEnv);
@@ -83,7 +85,7 @@ void ConfigureSc132SensorProfile(const Options& options) {
     return;
   }
 
-  // 25fps由60fps base profile派生；30fps使用匹配的master profile。
+  // 25/40/50/60fps由60fps base profile派生；30fps使用匹配的master profile。
   const char* profile = options.fps == 30 ? kSc132Single30FpsProfile
                                           : kSc132Single60FpsProfile;
   if (setenv(kSc132SensorProfileEnv, profile, 1) != 0) {
