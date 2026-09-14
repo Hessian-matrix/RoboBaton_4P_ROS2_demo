@@ -40,7 +40,7 @@ Options:
   -h, --help                      Show this help.
 
 No module-root variables are required. Upstream producer builds must synchronize
-libicm42688.so.2.1.0/.2/unversioned and libsc132.so.2.0.0/.2/unversioned into ./lib.
+libicm42688.so.2.1.0/.2/unversioned and libsc132.so.2.0.1/.2/unversioned into ./lib.
 USAGE
 }
 
@@ -108,7 +108,7 @@ for required_file in \
   "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.0" \
   "${ROBOBATON_LIB_DIR}/libicm42688.so.2" \
   "${ROBOBATON_LIB_DIR}/libicm42688.so" \
-  "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.0" \
+  "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.1" \
   "${ROBOBATON_LIB_DIR}/libsc132.so.2" \
   "${ROBOBATON_LIB_DIR}/libsc132.so"; do
   [[ -e "${required_file}" ]] || { echo "Missing required producer artifact: ${required_file}" >&2; exit 2; }
