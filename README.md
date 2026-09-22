@@ -2,7 +2,7 @@
 
 RoboBaton 4P 的 ROS2 `ament_cmake` 示例包，发布 SC132 四目 NV12 图像和 ICM-42688 IMU 数据。
 
-> **最终用户说明以 [4P_doc](https://4p-docs.readthedocs.io/en/latest/index.html) 为准。** 本 README 只保留 ROS2 仓库入口、最小构建/运行方式和支持边界。
+> **最终用户说明以 [4P_doc](https://4p-docs.readthedocs.io/zh-cn/latest/index.html) 为准。** 本 README 只保留 ROS2 仓库入口、最小构建/运行方式和支持边界。
 
 ## 目标产物
 
@@ -22,7 +22,7 @@ RoboBaton 4P 的 ROS2 `ament_cmake` 示例包，发布 SC132 四目 NV12 图像�
 /robobaton/imu/temperature
 ```
 
-完整 topic、消息类型、QoS、相机映射、时间戳和数据语义见 [ROS2 Demo 使用](https://4p-docs.readthedocs.io/en/latest/ros2-demo.html) 和 [数据合同](https://4p-docs.readthedocs.io/en/latest/data-contracts.html)。
+完整 topic、消息类型、QoS、相机映射、时间戳和数据语义见 [ROS2 Demo 使用](https://4p-docs.readthedocs.io/zh-cn/latest/usage/ros2-demo.html) 和 [数据合同](https://4p-docs.readthedocs.io/zh-cn/latest/development/data-contracts.html)。
 
 ## 版本查询
 
@@ -36,7 +36,7 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 /root/ros2_demo/install/lib/robobaton_4p_ros2_demo/robobaton_imu_rate_monitor --version
 ```
 
-版本查询不会初始化 ROS graph、相机或 IMU。产品版本、ABI 和发布组合见 [产品版本与兼容性](https://4p-docs.readthedocs.io/en/latest/product-and-compatibility.html)、[API 参考](https://4p-docs.readthedocs.io/en/latest/api-reference.html) 和 [版本更新记录](https://4p-docs.readthedocs.io/en/latest/changelog.html)。
+版本查询不会初始化 ROS graph、相机或 IMU。产品版本、ABI 和发布组合见 [产品版本与兼容性](https://4p-docs.readthedocs.io/zh-cn/latest/getting-started/product-and-compatibility.html)、[API 参考](https://4p-docs.readthedocs.io/zh-cn/latest/development/api-reference.html) 和 [版本更新记录](https://4p-docs.readthedocs.io/zh-cn/latest/changelog.html)。
 
 ## 构建
 
@@ -56,11 +56,11 @@ set -u
 script/build_x5_ros2.sh --clean --cross-root "$X5_CROSS_ROOT"
 ```
 
-脚本将产物放到本仓库的 `1.ros2_build/{build,install,log}`，默认生成 merged install。完整依赖、构建参数、install verifier 和发布包规则见 [公开 Demo 源码编译](https://4p-docs.readthedocs.io/en/latest/open-source-build.html)。
+脚本将产物放到本仓库的 `1.ros2_build/{build,install,log}`，默认生成 merged install。完整依赖、构建参数、install verifier 和发布包规则见 [公开 Demo 源码编译](https://4p-docs.readthedocs.io/zh-cn/latest/development/open-source-build.html)。
 
 ## 部署与运行
 
-部署到 `/root/ros2_demo/install` 前，必须使用完整 archive checksum、解包后的 runtime `abi_manifest.sha256`、旧应用退出检查、旧目录备份、原子切换和 smoke 验证。失败时恢复最近备份。完整命令见 [部署、升级与回滚](https://4p-docs.readthedocs.io/en/latest/deployment-and-upgrade.html)。
+部署到 `/root/ros2_demo/install` 前，必须使用完整 archive checksum、解包后的 runtime `abi_manifest.sha256`、旧应用退出检查、旧目录备份、原子切换和 smoke 验证。失败时恢复最近备份。完整命令见 [部署、升级与回滚](https://4p-docs.readthedocs.io/zh-cn/latest/development/deployment-and-upgrade.html)。
 
 启动默认四路相机和 IMU：
 
@@ -95,14 +95,14 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 
 ## 详细文档
 
-- [产品介绍](https://4p-docs.readthedocs.io/en/latest/Product_Introduction.html)
-- [产品版本与兼容性](https://4p-docs.readthedocs.io/en/latest/product-and-compatibility.html)
-- [ROS2 Demo 使用](https://4p-docs.readthedocs.io/en/latest/ros2-demo.html)
-- [公开 Demo 源码编译](https://4p-docs.readthedocs.io/en/latest/open-source-build.html)
-- [部署、升级与回滚](https://4p-docs.readthedocs.io/en/latest/deployment-and-upgrade.html)
-- [数据合同](https://4p-docs.readthedocs.io/en/latest/data-contracts.html)
-- [API 参考](https://4p-docs.readthedocs.io/en/latest/api-reference.html)
-- [故障排查](https://4p-docs.readthedocs.io/en/latest/troubleshooting.html)
-- [版本更新记录](https://4p-docs.readthedocs.io/en/latest/changelog.html)
+- [产品介绍](https://4p-docs.readthedocs.io/zh-cn/latest/getting-started/Product_Introduction.html)
+- [产品版本与兼容性](https://4p-docs.readthedocs.io/zh-cn/latest/getting-started/product-and-compatibility.html)
+- [ROS2 Demo 使用](https://4p-docs.readthedocs.io/zh-cn/latest/usage/ros2-demo.html)
+- [公开 Demo 源码编译](https://4p-docs.readthedocs.io/zh-cn/latest/development/open-source-build.html)
+- [部署、升级与回滚](https://4p-docs.readthedocs.io/zh-cn/latest/development/deployment-and-upgrade.html)
+- [数据合同](https://4p-docs.readthedocs.io/zh-cn/latest/development/data-contracts.html)
+- [API 参考](https://4p-docs.readthedocs.io/zh-cn/latest/development/api-reference.html)
+- [故障排查](https://4p-docs.readthedocs.io/zh-cn/latest/troubleshooting.html)
+- [版本更新记录](https://4p-docs.readthedocs.io/zh-cn/latest/changelog.html)
 
 许可证和第三方组件说明以本仓库的 `LICENSE` 及发布说明为准。
