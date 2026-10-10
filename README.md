@@ -43,18 +43,22 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 构建前需要：
 
 - 本仓库 `./lib/libicm42688.so` 和 `./lib/libsc132.so`；
-- X5 交叉编译包及其目标侧 ROS2、媒体编码头文件、vendor 库和 aarch64 工具链；
-- 主机 ROS Humble Python 环境，且 `/usr/bin/python3` 能导入 `ament_package`。
+- `x5_4cam_cross_toolchain_20261009` 工具包，包含目标侧 ROS2（含 image_transport/pluginlib）、媒体头库和固定的 Arm GNU AArch64 编译器；
+- Ubuntu 22.04 x86_64 主机、ROS Humble 和 `python3-colcon-common-extensions`；按下方源码编译页配置官方软件源并安装，系统 Python 必须能导入 ament。
 
 本仓库只构建 ROS2 consumer 和 compressed image_transport plugin，不从父仓库读取 producer 源码，也不在这里重新构建 producer 库。
 
 ```bash
-export X5_CROSS_ROOT="/path/to/cross_compile/new"
-set +u
+export X5_TOOLCHAIN_ROOT="/path/to/x5_4cam_cross_toolchain_20261009"
 source /opt/ros/humble/setup.bash
-set -u
-script/build_x5_ros2.sh --clean --cross-root "$X5_CROSS_ROOT"
+/usr/bin/python3 -c 'import ament_package, catkin_pkg, em, colcon_core'
+source "$X5_TOOLCHAIN_ROOT/setup_4cam_cross_env.sh"
+CMAKE_BUILD_PARALLEL_LEVEL=4 script/build_x5_ros2.sh \
+  --cross-root "$X5_CROSS_ROOT" --parallel-workers 1
+python3 script/verify_install.py 1.ros2_build/install
 ```
+
+`X5_CROSS_ROOT` 指向工具包内 `cross_compile/new`。主机只加载主机 ROS setup；不要 source 包内 AArch64 ROS setup。切换工具包后使用新的 `--build-root`；显式 `--toolchain-file` 优先于交叉环境脚本。
 
 脚本将产物放到本仓库的 `1.ros2_build/{build,install,log}`，默认生成 merged install。完整依赖、构建参数、install verifier 和发布包规则见 [公开 Demo 源码编译](https://4p-docs.readthedocs.io/zh-cn/latest/development/open-source-build.html)。
 

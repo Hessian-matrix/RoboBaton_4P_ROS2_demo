@@ -176,9 +176,6 @@ set(X5_RUNTIME_LIB_DIR "" CACHE PATH
 if(NOT X5_RUNTIME_LIB_DIR AND CMAKE_SYSROOT AND
    EXISTS "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/libspdlog.so.1")
   set(X5_RUNTIME_LIB_DIR "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu")
-elseif(NOT X5_RUNTIME_LIB_DIR AND
-       EXISTS "/root/x5/cross_compile/new/sysroot/usr/lib/aarch64-linux-gnu/libspdlog.so.1")
-  set(X5_RUNTIME_LIB_DIR "/root/x5/cross_compile/new/sysroot/usr/lib/aarch64-linux-gnu")
 endif()
 set(X5_RUNTIME_LIBS
   libconsole_bridge.so libconsole_bridge.so.1.0
@@ -198,9 +195,6 @@ set(X5_NUMPY_RUNTIME_LIB_DIR "" CACHE PATH
 if(NOT X5_NUMPY_RUNTIME_LIB_DIR AND CMAKE_SYSROOT AND
    EXISTS "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/libblas.so.3")
   set(X5_NUMPY_RUNTIME_LIB_DIR "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu")
-elseif(NOT X5_NUMPY_RUNTIME_LIB_DIR AND
-       EXISTS "/root/x5/cross_compile/new/sysroot/usr/lib/aarch64-linux-gnu/libblas.so.3")
-  set(X5_NUMPY_RUNTIME_LIB_DIR "/root/x5/cross_compile/new/sysroot/usr/lib/aarch64-linux-gnu")
 endif()
 foreach(numpy_runtime_lib IN ITEMS libblas.so.3 liblapack.so.3 libgfortran.so.5)
   if(NOT X5_NUMPY_RUNTIME_LIB_DIR OR NOT EXISTS "${X5_NUMPY_RUNTIME_LIB_DIR}/${numpy_runtime_lib}")

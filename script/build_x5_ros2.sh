@@ -129,11 +129,23 @@ BUILD_BASE="$(resolve_output_dir "${BUILD_BASE}")"
 INSTALL_BASE="$(resolve_output_dir "${INSTALL_BASE}")"
 LOG_BASE="$(resolve_output_dir "${LOG_BASE}")"
 
+# Preserve the explicit toolchain selection across environment setup.
+selected_toolchain_file="${TOOLCHAIN_FILE}"
 # ROS and cross setup scripts intentionally read unset variables.
 set +u
 # shellcheck disable=SC1090
 source "${CROSS_ENV_SCRIPT}"
 set -u
+TOOLCHAIN_FILE="${selected_toolchain_file}"
+export CMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}"
+: "${TARGET_ROS_PREFIX:?Cross environment must set TARGET_ROS_PREFIX}"
+: "${SYSROOT_ROOT:?Cross environment must set SYSROOT_ROOT}"
+for ros_package in ament_cmake rclcpp sensor_msgs rcl_interfaces image_transport pluginlib; do
+  [[ -f "${TARGET_ROS_PREFIX}/share/${ros_package}/cmake/${ros_package}Config.cmake" ]] || {
+    echo "Missing target ROS package: ${ros_package} in ${TARGET_ROS_PREFIX}" >&2
+    exit 2
+  }
+done
 
 colcon_args=(
   --log-base "${LOG_BASE}"
@@ -151,8 +163,8 @@ colcon_args+=(
   -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}"
   -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
   -DROBOBATON_LIB_DIR="${ROBOBATON_LIB_DIR}"
-  -DX5_BUILD_AMENT_PREFIX_PATH="${EXTRA_PREFIX}:${TARGET_ROS_PREFIX}"
-  -DCMAKE_PREFIX_PATH="${EXTRA_PREFIX};${TARGET_ROS_PREFIX};${SYSROOT_ROOT}/usr;${SYSROOT_ROOT}/usr_x5"
+  -DX5_BUILD_AMENT_PREFIX_PATH="${TARGET_ROS_PREFIX}"
+  -DCMAKE_PREFIX_PATH="${TARGET_ROS_PREFIX};${SYSROOT_ROOT}/usr;${SYSROOT_ROOT}/usr_x5"
   -DBUILD_TESTING=OFF)
 
 printf '[build_x5_ros2] package=%s\n' "${PKG_DIR}"
