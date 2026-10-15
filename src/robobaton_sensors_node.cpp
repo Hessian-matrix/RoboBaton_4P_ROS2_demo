@@ -13,7 +13,7 @@
 #include "robobaton_4p_ros2_demo/cam_demo_common.h"
 
 extern "C" {
-#include "robobaton_4p_ros2_demo/icm42688_driver.h"
+#include "robobaton_4p_ros2_demo/icm42670_driver.h"
 #include "robobaton_4p_ros2_demo/sc132camera.h"
 }
 
@@ -197,12 +197,12 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
 ImuPublisher::Config SensorNode::LoadImuConfig() {
   ImuPublisher::Config config;
   config.timestamp_mapper = &timestamp_mapper_;
-  config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 1000U);
+  config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 800U);
   if (config.sample_rate_hz != 25U && config.sample_rate_hz != 50U &&
       config.sample_rate_hz != 100U && config.sample_rate_hz != 200U &&
-      config.sample_rate_hz != 500U && config.sample_rate_hz != 1000U &&
-      config.sample_rate_hz != 2000U) {
-    throw std::invalid_argument("imu.sample_rate_hz only supports 25, 50, 100, 200, 500, 1000, or 2000");
+      config.sample_rate_hz != 400U && config.sample_rate_hz != 800U &&
+      config.sample_rate_hz != 1600U) {
+    throw std::invalid_argument("imu.sample_rate_hz only supports 25, 50, 100, 200, 400, 800, or 1600");
   }
   RequireSensorTimestampFifoReadMode(
       DeclareString(this, "imu.read_mode", "sensor_timestamp_fifo"));
@@ -224,8 +224,8 @@ ImuPublisher::Config SensorNode::LoadImuConfig() {
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--version") {
     std::printf("robobaton_sensors_node %s\n", ROBOBATON_RELEASE_VERSION);
-    std::printf("libicm42688 %s abi=%u.%u\n", icm42688_get_version(),
-                ICM42688_ABI_VERSION_MAJOR, ICM42688_ABI_VERSION_MINOR);
+    std::printf("libicm42670 %s abi=%u.%u\n", icm42670_get_version(),
+                ICM42670_ABI_VERSION_MAJOR, ICM42670_ABI_VERSION_MINOR);
     std::printf("libsc132 %s abi=%u.%u\n", sc132_get_version(),
                 SC132_ABI_VERSION_MAJOR, SC132_ABI_VERSION_MINOR);
     return 0;

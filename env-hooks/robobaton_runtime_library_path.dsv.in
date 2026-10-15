@@ -1,3 +1,5 @@
 prepend-non-duplicate-if-exists;LD_LIBRARY_PATH;lib/@PROJECT_NAME@
+prepend-non-duplicate-if-exists;LD_LIBRARY_PATH;/usr/hobot/lib
+prepend-non-duplicate-if-exists;LD_LIBRARY_PATH;/usr/hobot/lib/sensor
 prepend-non-duplicate-if-exists;LD_LIBRARY_PATH;/usr/lib
 prepend-non-duplicate-if-exists;LD_LIBRARY_PATH;/usr/lib/sensor

@@ -67,15 +67,15 @@ get_filename_component(DEFAULT_ROBOBATON_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/li
 set(ROBOBATON_LIB_DIR "${DEFAULT_ROBOBATON_LIB_DIR}" CACHE PATH
   "Existing package library directory containing synchronized ABI-v2 producers")
 
-set(ICM42688_REAL "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.0")
-set(ICM42688_SONAME "${ROBOBATON_LIB_DIR}/libicm42688.so.2")
-set(ICM42688_LINKER "${ROBOBATON_LIB_DIR}/libicm42688.so")
-set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.1")
+set(ICM42670_REAL "${ROBOBATON_LIB_DIR}/libicm42670.so.2.0.0")
+set(ICM42670_SONAME "${ROBOBATON_LIB_DIR}/libicm42670.so.2")
+set(ICM42670_LINKER "${ROBOBATON_LIB_DIR}/libicm42670.so")
+set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.0")
 set(SC132_SONAME "${ROBOBATON_LIB_DIR}/libsc132.so.2")
 set(SC132_LINKER "${ROBOBATON_LIB_DIR}/libsc132.so")
 
 foreach(required_path
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/icm42688_driver.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/icm42670_driver.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/sc132camera.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/cam_demo_common.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/cam_demo_config.h"
@@ -83,17 +83,17 @@ foreach(required_path
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cam_demo_config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/timestamp_mapper.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/timestamp_mapper.cpp"
-    "${ICM42688_REAL}" "${ICM42688_SONAME}" "${ICM42688_LINKER}"
+    "${ICM42670_REAL}" "${ICM42670_SONAME}" "${ICM42670_LINKER}"
     "${SC132_REAL}" "${SC132_SONAME}" "${SC132_LINKER}")
   if(NOT EXISTS "${required_path}")
     message(FATAL_ERROR "Missing required RoboBaton ABI-v2 artifact: ${required_path}")
   endif()
 endforeach()
 
-add_library(robobaton_icm42688 SHARED IMPORTED GLOBAL)
-set_target_properties(robobaton_icm42688 PROPERTIES
-  IMPORTED_LOCATION "${ICM42688_REAL}"
-  IMPORTED_SONAME "libicm42688.so.2"
+add_library(robobaton_icm42670 SHARED IMPORTED GLOBAL)
+set_target_properties(robobaton_icm42670 PROPERTIES
+  IMPORTED_LOCATION "${ICM42670_REAL}"
+  IMPORTED_SONAME "libicm42670.so.2"
   INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(robobaton_sc132 SHARED IMPORTED GLOBAL)
@@ -136,7 +136,7 @@ ament_target_dependencies(robobaton_sensors_node rclcpp sensor_msgs image_transp
 target_include_directories(robobaton_sensors_node PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(robobaton_sensors_node
-  robobaton_icm42688
+  robobaton_icm42670
   robobaton_sc132
   Threads::Threads)
 target_compile_options(robobaton_sensors_node PRIVATE
@@ -167,7 +167,7 @@ set_target_properties(robobaton_imu_rate_monitor PROPERTIES
 install(TARGETS robobaton_sensors_node robobaton_imu_rate_monitor RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(TARGETS robobaton_nv12_compressed_image_transport LIBRARY DESTINATION lib/${PROJECT_NAME})
 install(FILES
-  "${ICM42688_REAL}" "${ICM42688_SONAME}" "${ICM42688_LINKER}"
+  "${ICM42670_REAL}" "${ICM42670_SONAME}" "${ICM42670_LINKER}"
   "${SC132_REAL}" "${SC132_SONAME}" "${SC132_LINKER}"
   DESTINATION lib/${PROJECT_NAME})
 

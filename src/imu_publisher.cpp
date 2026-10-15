@@ -10,7 +10,7 @@
 #include <sensor_msgs/msg/temperature.hpp>
 #endif
 
-#include "robobaton_4p_ros2_demo/icm42688_driver.h"
+#include "robobaton_4p_ros2_demo/icm42670_driver.h"
 
 #include <atomic>
 #include <chrono>
@@ -32,15 +32,15 @@ void RecordProcessFailure() noexcept;
 namespace {
 
 struct ImuCoreConfig {
-  uint32_t sample_rate_hz = 1000U;
+  uint32_t sample_rate_hz = 800U;
   uint32_t fifo_watermark_samples = 1U;
-  uint32_t read_mode = ICM42688_READ_MODE_SENSOR_TIMESTAMP_FIFO;
+  uint32_t read_mode = ICM42670_READ_MODE_SENSOR_TIMESTAMP_FIFO;
   bool rate_metrics_enabled = false;
 };
 
 class ImuLifecycleCore {
  public:
-  using Sink = std::function<void(const icm42688_sample_t&)>;
+  using Sink = std::function<void(const icm42670_sample_t&)>;
   using FailureNotifier = std::function<void()>;
 
   ImuLifecycleCore() = default;
@@ -59,16 +59,16 @@ class ImuLifecycleCore {
     notifier_ = std::move(notifier);
     metrics_enabled_ = config.rate_metrics_enabled;
 
-    icm42688_config_t producer_config = ICM42688_CONFIG_INIT;
+    icm42670_config_t producer_config = ICM42670_CONFIG_INIT;
     producer_config.sample_rate_hz = config.sample_rate_hz;
     producer_config.fifo_watermark_samples = config.fifo_watermark_samples;
     producer_config.read_mode = config.read_mode;
 
-    icm42688_handle_t* candidate = nullptr;
-    const int create_status = icm42688_create(&producer_config, &candidate);
-    if (create_status != ICM42688_STATUS_OK || candidate == nullptr) {
+    icm42670_handle_t* candidate = nullptr;
+    const int create_status = icm42670_create(&producer_config, &candidate);
+    if (create_status != ICM42670_STATUS_OK || candidate == nullptr) {
       if (candidate != nullptr) {
-        icm42688_destroy(candidate);
+        icm42670_destroy(candidate);
       }
       terminal_ = true;
       RecordFailure();
@@ -76,10 +76,10 @@ class ImuLifecycleCore {
     }
     handle_ = candidate;
 
-    if (icm42688_set_callback(handle_, &ImuLifecycleCore::SampleTrampoline, this) !=
-        ICM42688_STATUS_OK) {
+    if (icm42670_set_callback(handle_, &ImuLifecycleCore::SampleTrampoline, this) !=
+        ICM42670_STATUS_OK) {
       admission_.store(false, std::memory_order_release);
-      icm42688_destroy(handle_);
+      icm42670_destroy(handle_);
       handle_ = nullptr;
       terminal_ = true;
       RecordFailure();
@@ -88,15 +88,15 @@ class ImuLifecycleCore {
 
     admission_.store(true, std::memory_order_release);
     start_attempted_ = true;
-    const int start_status = icm42688_start(handle_);
-    if (start_status != ICM42688_STATUS_OK) {
+    const int start_status = icm42670_start(handle_);
+    if (start_status != ICM42670_STATUS_OK) {
       admission_.store(false, std::memory_order_release);
-      const int stop_status = icm42688_stop(handle_);
-      if (stop_status != ICM42688_STATUS_OK) {
+      const int stop_status = icm42670_stop(handle_);
+      if (stop_status != ICM42670_STATUS_OK) {
         stop_failed_.store(true, std::memory_order_release);
       }
       // start 部分失败仍由唯一 owner destroy 非空 C handle。
-      icm42688_destroy(handle_);
+      icm42670_destroy(handle_);
       handle_ = nullptr;
       terminal_ = true;
       RecordFailure();
@@ -113,31 +113,58 @@ class ImuLifecycleCore {
     if (terminal_ && handle_ == nullptr) {
       return !stop_failed_.load(std::memory_order_acquire);
     }
+    if (handle_ != nullptr && start_attempted_ && running_ &&
+        icm42670_is_running(handle_) == 0) {
+      admission_.store(false, std::memory_order_release);
+      running_ = false;
+      terminal_ = true;
+      RecordFailure();
+    }
     terminal_ = true;
     admission_.store(false, std::memory_order_release);
-    int stop_status = ICM42688_STATUS_OK;
+    int stop_status = ICM42670_STATUS_OK;
+    int health_status = ICM42670_STATUS_INVALID_STATE;
     if (handle_ != nullptr && start_attempted_) {
       // context 保持到 blocking stop 返回；即使 stop 失败，仍执行唯一 destroy finalizer。
-      stop_status = icm42688_stop(handle_);
-      if (stop_status != ICM42688_STATUS_OK) {
+      stop_status = icm42670_stop(handle_);
+      if (stop_status == ICM42670_STATUS_OK) {
+        runtime_health_ = ICM42670_RUNTIME_HEALTH_INIT;
+        health_status = icm42670_get_runtime_health(handle_, &runtime_health_);
+        runtime_health_valid_ = health_status == ICM42670_STATUS_OK &&
+                                runtime_health_.session_generation != 0U;
+      }
+      if (stop_status != ICM42670_STATUS_OK || !runtime_health_valid_) {
         stop_failed_.store(true, std::memory_order_release);
         RecordFailure();
       }
     }
     if (handle_ != nullptr) {
-      icm42688_destroy(handle_);
+      icm42670_destroy(handle_);
       handle_ = nullptr;
     }
     running_ = false;
     sink_ = {};
     notifier_ = {};
-    return stop_status == ICM42688_STATUS_OK;
+    return stop_status == ICM42670_STATUS_OK && health_status == ICM42670_STATUS_OK &&
+           runtime_health_valid_;
   }
 
   bool failed() const noexcept { return failed_.load(std::memory_order_acquire); }
+  bool CheckProducerHealth() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!terminal_ && handle_ != nullptr && start_attempted_ && running_ &&
+        icm42670_is_running(handle_) == 0) {
+      admission_.store(false, std::memory_order_release);
+      running_ = false;
+      terminal_ = true;
+      RecordFailure();
+    }
+    return !failed_.load(std::memory_order_acquire);
+  }
+
 
  private:
-  static void SampleTrampoline(const icm42688_sample_t* sample, void* user_data) noexcept {
+  static void SampleTrampoline(const icm42670_sample_t* sample, void* user_data) noexcept {
     auto* owner = static_cast<ImuLifecycleCore*>(user_data);
     if (owner == nullptr || !owner->admission_.load(std::memory_order_acquire)) {
       return;
@@ -148,8 +175,9 @@ class ImuLifecycleCore {
       }
       // 默认关闭时不读取clock、不进入metrics mutex/atomic；启用后在ROS sink前记录producer输入。
       if (owner->metrics_enabled_) {
-        owner->metrics_.RecordSourceWithoutSequence(sample->sample_timestamp_ns,
-                                                    SteadyNowNs());
+        owner->metrics_.RecordSource(sample->sample_sequence,
+                                      sample->sample_timestamp_ns,
+                                      SteadyNowNs());
       }
       owner->sink_(*sample);
     } catch (...) {
@@ -190,6 +218,11 @@ class ImuLifecycleCore {
     return metrics_.Snapshot(monotonic_ns);
   }
 
+  icm42670_runtime_health_t RuntimeHealth() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return runtime_health_;
+  }
+
  private:
   void RecordFailure() noexcept {
     const bool first = !failed_.exchange(true, std::memory_order_acq_rel);
@@ -202,14 +235,16 @@ class ImuLifecycleCore {
   }
 
   std::mutex mutex_;
-  icm42688_handle_t* handle_ = nullptr;
+  icm42670_handle_t* handle_ = nullptr;
   Sink sink_;
   FailureNotifier notifier_;
   std::atomic<bool> admission_{false};
   std::atomic<bool> failed_{false};
   std::atomic<bool> stop_failed_{false};
   robobaton_4p_ros2_demo::PublicationRateMetrics metrics_{
-      robobaton_4p_ros2_demo::SequenceWidth::kNone};
+      robobaton_4p_ros2_demo::SequenceWidth::k64Bit};
+  icm42670_runtime_health_t runtime_health_ = ICM42670_RUNTIME_HEALTH_INIT;
+  bool runtime_health_valid_ = false;
   bool metrics_enabled_ = false;
   bool start_claimed_ = false;
   bool start_attempted_ = false;
@@ -246,7 +281,7 @@ bool ImuHarnessStart(void* opaque) {
   config.rate_metrics_enabled = harness->config.rate_metrics_enabled;
   return harness->core.Start(
       config,
-      [harness](const icm42688_sample_t&) {
+      [harness](const icm42670_sample_t&) {
         // host harness按production顺序模拟主/辅助发布，验证任一异常都会计数后rethrow。
         try {
           if (harness->throw_in_callback.exchange(false)) {
@@ -287,10 +322,17 @@ std::size_t ImuHarnessSampleCount(void* opaque) {
 void ImuHarnessThrowInAuxiliaryPublish(void* opaque) {
   static_cast<ImuHarness*>(opaque)->throw_in_auxiliary_publish.store(true);
 }
+bool ImuHarnessCheckProducerHealth(void* opaque) {
+  return static_cast<ImuHarness*>(opaque)->core.CheckProducerHealth();
+}
 
 robobaton_4p_ros2_demo::PublicationRateSnapshot ImuHarnessSnapshot(
     void* opaque, uint64_t monotonic_ns) {
   return static_cast<ImuHarness*>(opaque)->core.Snapshot(monotonic_ns);
+}
+
+icm42670_runtime_health_t ImuHarnessRuntimeHealth(void* opaque) {
+  return static_cast<ImuHarness*>(opaque)->core.RuntimeHealth();
 }
 
 }  // namespace release008_test
@@ -332,14 +374,14 @@ class ImuPublisher::Impl {
     ImuCoreConfig core_config;
     core_config.sample_rate_hz = config_.sample_rate_hz;
     core_config.fifo_watermark_samples = config_.fifo_watermark_samples;
-    core_config.read_mode = ICM42688_READ_MODE_SENSOR_TIMESTAMP_FIFO;
+    core_config.read_mode = ICM42670_READ_MODE_SENSOR_TIMESTAMP_FIFO;
     core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
     if (!core_.Start(
             core_config,
-            [this](const icm42688_sample_t& sample) { PublishSample(sample); },
+            [this](const icm42670_sample_t& sample) { PublishSample(sample); },
             [this] {
               robobaton_4p_ros2_demo::RecordProcessFailure();
-              RCLCPP_ERROR(node_->get_logger(), "ICM callback failure; shutting down");
+              RCLCPP_ERROR(node_->get_logger(), "ICM producer or callback failure; shutting down");
               rclcpp::shutdown();
             })) {
       throw std::runtime_error("ICM publisher start failed or restart was rejected");
@@ -353,9 +395,15 @@ class ImuPublisher::Impl {
           period, [this] { LogRateMetrics(); }, nullptr, node_->get_node_base_interface().get(),
           node_->get_node_timers_interface().get());
     }
+    // Producer failure detection remains active when rate diagnostics are disabled.
+    health_timer_ = rclcpp::create_wall_timer(
+        std::chrono::milliseconds(100U), [this] { (void)core_.CheckProducerHealth(); },
+        nullptr, node_->get_node_base_interface().get(),
+        node_->get_node_timers_interface().get());
   }
 
   void Stop() noexcept {
+    health_timer_.reset();
     rate_timer_.reset();
     if (!started_ && !core_.failed()) {
       return;
@@ -404,7 +452,7 @@ class ImuPublisher::Impl {
   }
 
   // IMU样本很小，直接在ICM回调线程发布可避免每样本线程唤醒和队列背压丢样。
-  void PublishSample(const icm42688_sample_t& sample) {
+  void PublishSample(const icm42670_sample_t& sample) {
     sensor_msgs::msg::Imu imu;
     AssignStamp(imu.header.stamp,
                 ToRosStampParts(
@@ -449,6 +497,7 @@ class ImuPublisher::Impl {
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr temperature_pub_;
   rclcpp::TimerBase::SharedPtr rate_timer_;
+  rclcpp::TimerBase::SharedPtr health_timer_;
   robobaton_4p_ros2_demo::PublicationRateSnapshot previous_snapshot_{};
 };
 

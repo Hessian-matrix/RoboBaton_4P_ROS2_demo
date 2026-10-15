@@ -20,7 +20,7 @@ PLUGIN_LIBRARY = "librobobaton_nv12_compressed_image_transport.so"
 PLUGIN_XML = f"share/{PACKAGE}/robobaton_nv12_compressed_plugins.xml"
 ENV_SCRIPT = "robobaton_ros2_env.bash"
 PLUGIN_RESOURCE = f"share/ament_index/resource_index/image_transport__pluginlib__plugin/{PACKAGE}"
-# 内部DDS probe属于主仓validation工具，正式install必须拒绝混入。
+# 内部DDS probe与旧ICM42688交付文件都不得进入正式install。
 FORBIDDEN_INTERNAL_ARTIFACTS = {"topic_rate_probe"}
 ROS_TRANSITIVE_RUNTIME_LIBS = (
     "libconsole_bridge.so", "libconsole_bridge.so.1.0",
@@ -31,13 +31,13 @@ ROS_TRANSITIVE_RUNTIME_LIBS = (
     "libblas.so.3", "liblapack.so.3", "libgfortran.so.5",
 )
 LIBRARIES = {
-    "icm42688": {
-        "names": ("libicm42688.so.2.1.0", "libicm42688.so.2", "libicm42688.so"),
-        "soname": "libicm42688.so.2",
-        "versions": ("ICM42688_X5_2.0", "ICM42688_X5_2.1"),
+    "icm42670": {
+        "names": ("libicm42670.so.2.0.0", "libicm42670.so.2", "libicm42670.so"),
+        "soname": "libicm42670.so.2",
+        "versions": ("ICM42670_X5_2.0",),
     },
     "sc132": {
-        "names": ("libsc132.so.2.0.1", "libsc132.so.2", "libsc132.so"),
+        "names": ("libsc132.so.2.0.0", "libsc132.so.2", "libsc132.so"),
         "soname": "libsc132.so.2",
         "versions": ("LIBSC132_2.0",),
     },
@@ -169,9 +169,9 @@ def verify_runtime_env_script(install_dir: Path) -> None:
 def required_symbol_versions(spec: dict[str, object]) -> set[str]:
     return set(spec["versions"])
 
-NODE_LIBRARY_KEYS = ("icm42688", "sc132")
-# Node只需声明其实际调用符号的版本；producer仍必须提供完整ABI 2.1版本节点集合。
-NODE_REQUIRED_VERSIONS = {"ICM42688_X5_2.0", "LIBSC132_2.0"}
+NODE_LIBRARY_KEYS = ("icm42670", "sc132")
+# Node needs reflect used symbols; each producer separately supplies its complete version definitions.
+NODE_REQUIRED_VERSIONS = {"ICM42670_X5_2.0", "LIBSC132_2.0"}
 PLUGIN_PLATFORM_SONAMES = {"libmultimedia.so.1", "libhbmem.so.1", "libalog.so.1"}
 
 
@@ -230,7 +230,27 @@ def verify_executable(runtime_dir: Path, install_dir: Path, name: str) -> Path:
     return executable
 
 
+def verify_no_legacy_imu(install_dir: Path) -> None:
+    checked: set[Path] = set()
+    for path in install_dir.rglob("*"):
+        if path.name == "icm42688_driver.h" or path.name.startswith("libicm42688.so"):
+            raise AssertionError(f"legacy IMU artifact leaked into release install: {path}")
+        if not path.is_file():
+            continue
+        real = path.resolve()
+        if real in checked:
+            continue
+        checked.add(real)
+        with path.open("rb") as stream:
+            if stream.read(4) != b"\x7fELF":
+                continue
+        legacy = [name for name in needed(path) if name.startswith("libicm42688.so")]
+        if legacy:
+            raise AssertionError(f"legacy IMU dependencies in {path}: {legacy}")
+
+
 def verify(install_dir: Path) -> None:
+    verify_no_legacy_imu(install_dir)
     runtime_dir = install_dir / "lib" / PACKAGE
     version_file = install_dir / "share" / PACKAGE / "VERSION"
     if not version_file.is_file() or version_file.read_text(encoding="utf-8").strip() != RELEASE_VERSION:
@@ -238,9 +258,8 @@ def verify(install_dir: Path) -> None:
     node = verify_executable(runtime_dir, install_dir, NODE)
     verify_executable(runtime_dir, install_dir, IMU_RATE_MONITOR)
     for name in FORBIDDEN_INTERNAL_ARTIFACTS:
-        if (runtime_dir / name).exists():
+        if (runtime_dir / name).exists() or (runtime_dir / name).is_symlink():
             raise AssertionError(f"internal validation artifact leaked into release install: {name}")
-
     plugin = runtime_dir / PLUGIN_LIBRARY
     if not plugin.is_file() or plugin.is_symlink():
         raise AssertionError(f"missing image_transport plugin library: {plugin}")
@@ -253,7 +272,7 @@ def verify(install_dir: Path) -> None:
             raise AssertionError(f"missing ROS2 transitive runtime library: {path}")
 
     project_needed = {name for name in needed(node)
-                      if name.startswith(("libicm42688", "libsc132", "libmultimedia"))}
+                      if name.startswith(("libicm42670", "libicm42688", "libsc132", "libmultimedia"))}
     expected_project_needed = {LIBRARIES[key]["soname"] for key in NODE_LIBRARY_KEYS}
     if project_needed != expected_project_needed:
         raise AssertionError(
@@ -264,8 +283,8 @@ def verify(install_dir: Path) -> None:
         raise AssertionError(
             f"node version needs missing: {sorted(NODE_REQUIRED_VERSIONS - node_versions)}"
         )
-    old_versions = {value for value in node_versions if value.endswith("_1.0") and
-                    value.startswith(("ICM42688_", "LIBSC132_"))}
+    old_versions = {value for value in node_versions if value.startswith("ICM42688_") or
+                    (value.endswith("_1.0") and value.startswith("LIBSC132_"))}
     if old_versions:
         raise AssertionError(f"node retains old ABI needs: {sorted(old_versions)}")
     # 可执行文件的$ORIGIN RUNPATH已由verify_executable统一校验。

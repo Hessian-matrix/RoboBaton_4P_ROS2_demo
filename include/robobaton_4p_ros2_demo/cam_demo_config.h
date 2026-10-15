@@ -10,7 +10,7 @@ namespace robobaton_demo {
 void ValidateCameraOptions(const Options& options);
 
 // 功能：配置 libsc132 触发输出模式。
-// 输入：options.trigger_mode，默认 software_gpio。
+// 输入：options.trigger_mode，默认 vin_lpwm。
 // 副作用：设置进程内环境变量 SC132_TRIGGER_MODE，libsc132 初始化时读取。
 void ConfigureSc132TriggerMode(const Options& options);
 

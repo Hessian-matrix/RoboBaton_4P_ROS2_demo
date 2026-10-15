@@ -16,7 +16,7 @@ constexpr int kMountRotateDegrees = 90;
 constexpr uint32_t kDefaultCameraMask = (1U << kMaxChannels) - 1U;
 constexpr uint64_t kDefaultFrameSetMaxSkewNs = SC132_FRAME_SET_DEFAULT_MAX_SKEW_NS;
 constexpr uint32_t kDefaultFrameSetTimeoutMs = 100;
-constexpr const char* kDefaultSc132TriggerMode = "software_gpio";
+constexpr const char* kDefaultSc132TriggerMode = "vin_lpwm";
 
 // ROS 相机发布路径使用的运行参数。
 // 输入来源：ROS 参数或默认值。

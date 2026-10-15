@@ -1,8 +1,10 @@
 # RoboBaton_4P_ROS2_demo
 
-RoboBaton 4P 的 ROS2 `ament_cmake` 示例包，发布 SC132 四目 NV12 图像和 ICM-42688 IMU 数据。
+RoboBaton 4P V2 的 ROS2 `ament_cmake` 示例包，发布 SC132 四目 NV12 图像和 ICM-42670-P IMU 数据。
 
 > **最终用户说明以 [4P_doc](https://4p-docs.readthedocs.io/zh-cn/latest/index.html) 为准。** 本 README 只保留 ROS2 仓库入口、最小构建/运行方式和支持边界。
+
+当前源码使用 `icm42670_*` / `icm42670_driver.h`，SONAME `libicm42670.so.2`、real SO `libicm42670.so.2.0.0`、符号节点 `ICM42670_X5_2.0`。请成套更新头文件、库、配置与 consumer；历史 V1 包和验收不能替代 V2 运行检查，软件 `VERSION` 保持独立。
 
 ## 目标产物
 
@@ -42,7 +44,7 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 
 构建前需要：
 
-- 本仓库 `./lib/libicm42688.so` 和 `./lib/libsc132.so`；
+- 本仓库 `./lib/libicm42670.so` 和 `./lib/libsc132.so`；
 - `x5_4cam_cross_toolchain_20261009` 工具包，包含目标侧 ROS2（含 image_transport/pluginlib）、媒体头库和固定的 Arm GNU AArch64 编译器；
 - Ubuntu 22.04 x86_64 主机、ROS Humble 和 `python3-colcon-common-extensions`；按下方源码编译页配置官方软件源并安装，系统 Python 必须能导入 ament。
 
@@ -86,15 +88,15 @@ ros2 run robobaton_4p_ros2_demo robobaton_sensors_node --ros-args \
 ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 ```
 
-默认 `imu.sample_rate_hz=1000`，monitor 的稳定窗口应接近 `1000Hz`。相机帧率和 IMU 采样率相互独立。
+默认 `imu.sample_rate_hz=800`，monitor 的稳定窗口应接近 `800Hz`。相机帧率和 IMU 采样率相互独立。
 
 ## 支持边界摘要
 
 - 相机支持 `25/30/40/50/60fps`，默认 `30fps`；只支持单路或完整四路，不支持 2/3 路组合。
 - `camera.rotate_degrees=180` 只支持 `30fps`；其他公开帧率使用 `180` 会被拒绝。
 - raw 图像为 NV12；compressed 使用 X5 硬件 JPEG；ROS2 路径不提供 RTSP。
-- IMU 支持 `25/50/100/200/500/1000/2000Hz`，默认 `1000Hz`，使用 sensor-timestamp FIFO。
-- 默认 trigger 为 `software_gpio`；不提供TF、外参、相机标定或可用的 IMU orientation。
+- IMU 原生支持 `25/50/100/200/400/800/1600Hz`，默认 `800Hz`，使用 sensor-timestamp FIFO；旧 `500/1000/2000Hz` 明确拒绝。
+- 默认 trigger 为 `vin_lpwm`（VIN 硬件触发）；`none` 仅用于 free-run 诊断。`software_gpio`（解析 `34130000.gpio` offset `0`）已关闭公开入口，仅保留为主仓内部调试路径。INT1 为 `34120000.gpio` offset `8`。V2 IMU FSYNC 与相机触发共网，不表示硬件相机/IMU 对齐；不提供 TF、外参、相机标定或可用的 IMU orientation。
 - `CameraInfo` 只有当前帧宽高，标定字段为空；完整时间戳和 buffer 语义见数据合同。
 
 ## 详细文档
