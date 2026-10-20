@@ -11,9 +11,13 @@
 #include <rclcpp/expand_topic_or_service_name.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <cinttypes>
+#include <cstdio>
 #endif
 
 #include "robobaton_4p_ros2_demo/sc132camera.h"
+#include "robobaton_4p_ros2_demo/realtime_mutex.h"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +39,8 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <pthread.h>
+#include <sched.h>
 #include <utility>
 #include <vector>
 
@@ -67,6 +73,7 @@ struct CameraCoreConfig {
   std::size_t queue_capacity = 2U;
   bool drop_newest = false;
   bool rate_metrics_enabled = false;
+  std::function<void(const sc132_frame_set_t&)> fsync_group_sink;
 };
 
 class RetainedFrameJob {
@@ -119,7 +126,7 @@ class FrameQueue {
   FrameQueue& operator=(const FrameQueue&) = delete;
 
   bool Push(RetainedFrameJob job) {
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<robobaton_demo::RealtimeMutex> lock(mutex_);
     if (stopped_) {
       return false;
     }
@@ -143,7 +150,7 @@ class FrameQueue {
   }
 
   bool Pop(RetainedFrameJob* output) {
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<robobaton_demo::RealtimeMutex> lock(mutex_);
     not_empty_.wait(lock, [this] { return stopped_ || !queue_.empty(); });
     if (stopped_ || queue_.empty()) {
       return false;
@@ -157,7 +164,7 @@ class FrameQueue {
 
   void CloseAdmission() noexcept {
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<robobaton_demo::RealtimeMutex> lock(mutex_);
       stopped_ = true;
     }
     not_empty_.notify_all();
@@ -166,7 +173,7 @@ class FrameQueue {
 
   void StopAndDetach(std::deque<RetainedFrameJob>* detached) noexcept {
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<robobaton_demo::RealtimeMutex> lock(mutex_);
       stopped_ = true;
       detached->swap(queue_);
     }
@@ -176,7 +183,7 @@ class FrameQueue {
 
 #ifdef RELEASE008_CONTRACT_TEST
   void FailNextAllocation() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<robobaton_demo::RealtimeMutex> lock(mutex_);
     fail_next_allocation_ = true;
   }
 #endif
@@ -184,9 +191,9 @@ class FrameQueue {
  private:
   const std::size_t capacity_;
   const bool drop_newest_;
-  std::mutex mutex_;
-  std::condition_variable not_empty_;
-  std::condition_variable not_full_;
+  robobaton_demo::RealtimeMutex mutex_;
+  robobaton_demo::RealtimeCondition not_empty_;
+  robobaton_demo::RealtimeCondition not_full_;
   std::deque<RetainedFrameJob> queue_;
   bool stopped_ = false;
 #ifdef RELEASE008_CONTRACT_TEST
@@ -197,7 +204,7 @@ class FrameQueue {
 
 class CameraLifecycleCore {
  public:
-  using Sink = std::function<void(const RetainedFrameJob&)>;
+  using Sink = std::function<void(RetainedFrameJob&)>;
   using FailureNotifier = std::function<void()>;
 
   CameraLifecycleCore() : bridge_(new CallbackBridge()) { bridge_->owner.store(this); }
@@ -381,6 +388,7 @@ class CameraLifecycleCore {
         frame_set->camera_count > kMaxCameras) {
       throw std::runtime_error("invalid frame-set header");
     }
+    if (config_.fsync_group_sink) config_.fsync_group_sink(*frame_set);
     std::array<bool, kMaxCameras> seen{};
     for (uint32_t index = 0; index < frame_set->camera_count; ++index) {
       const sc132_frame_set_item_t& item = frame_set->items[index];
@@ -423,6 +431,12 @@ class CameraLifecycleCore {
   void WorkerLoop(uint32_t camera_id) noexcept {
     RecordContractEvent("consumer.sc.worker_start");
     try {
+#ifndef RELEASE008_CONTRACT_TEST
+      sched_param scheduling{};
+      scheduling.sched_priority = 3;
+      const int result = pthread_setschedparam(pthread_self(), SCHED_RR, &scheduling);
+      if (result) throw std::system_error(result, std::generic_category(), "schedule camera publication");
+#endif
       RetainedFrameJob job;
       while (queues_[camera_id]->Pop(&job)) {
         sink_(job);
@@ -668,16 +682,6 @@ namespace {
 constexpr char kImageTopicSuffix[] = "/image_raw";
 constexpr char kCameraInfoTopicSuffix[] = "/camera_info";
 
-bool Sc132TimestampsAreMonotonicRaw(const robobaton_demo::Options& options) noexcept {
-  return options.trigger_mode == "software_gpio" || options.trigger_mode == "gpio";
-}
-
-const SensorTimestampMapper& RequireTimestampMapper(const SensorTimestampMapper* mapper) {
-  if (mapper == nullptr) {
-    throw std::invalid_argument("camera publisher requires a timestamp mapper");
-  }
-  return *mapper;
-}
 
 std::string CameraTopic(uint32_t camera_id, const char* suffix) {
   return "/robobaton/cam" + std::to_string(camera_id) + suffix;
@@ -743,7 +747,6 @@ class CameraPublisher::Impl {
  public:
   Impl(rclcpp::Node* node, Config config)
       : node_(node), config_(std::move(config)),
-        timestamp_mapper_(RequireTimestampMapper(config_.timestamp_mapper)),
         core_(ProcessCameraCore()) {
     if (node_ == nullptr || config_.queue_capacity == 0U || config_.image_encoding != "nv12" ||
         config_.compressed_jpeg_quality < 1 || config_.compressed_jpeg_quality > 100 ||
@@ -762,6 +765,8 @@ class CameraPublisher::Impl {
                                        config_.compressed_jpeg_quality);
       image_publishers_[camera_id] = image_transport::create_publisher(
           node_, image_topic, image_qos.get_rmw_qos_profile());
+      exposure_publishers_[camera_id] = node_->create_publisher<std_msgs::msg::String>(
+          CameraTopic(camera_id, "/exposure"), image_qos);
       if (config_.publish_camera_info) {
         camera_info_publishers_[camera_id] =
             node_->create_publisher<sensor_msgs::msg::CameraInfo>(
@@ -788,9 +793,10 @@ class CameraPublisher::Impl {
     core_config.queue_capacity = config_.queue_capacity;
     core_config.drop_newest = config_.queue_policy == QueuePolicy::kDropNewest;
     core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
+    core_config.fsync_group_sink = config_.fsync_group_sink;
     if (!core_.Start(
             core_config,
-            [this](const RetainedFrameJob& job) { PublishFrame(job); },
+            [this](RetainedFrameJob& job) { PublishFrame(job); },
             [this] {
               robobaton_4p_ros2_demo::RecordProcessFailure();
               RCLCPP_ERROR(node_->get_logger(), "SC132 lifecycle failure; shutting down");
@@ -836,6 +842,9 @@ class CameraPublisher::Impl {
         continue;
       }
       const auto current = core_.Snapshot(camera_id, now_ns);
+      if (current.interval_start_monotonic_ns == 0U) {
+        continue;
+      }
       const auto delta = robobaton_4p_ros2_demo::PublicationRateMetrics::Delta(
           previous_snapshots_[camera_id], current);
       previous_snapshots_[camera_id] = current;
@@ -874,14 +883,10 @@ class CameraPublisher::Impl {
   }
 
   RosStampParts HeaderStampFromFrame(const sc132_frame_info_t& info) const {
-    if (Sc132TimestampsAreMonotonicRaw(config_.options)) {
-      return ToRosStampParts(
-          timestamp_mapper_.MapMonotonicRawToRealtimeNs(info.timestamp_ns));
-    }
     return ToRosStampParts(info.timestamp_ns);
   }
 
-  void PublishFrame(const RetainedFrameJob& job) {
+  void PublishFrame(RetainedFrameJob& job) {
     const auto& info = job.info();
     if (!job.owns_frame() || info.y_size > std::numeric_limits<std::size_t>::max() ||
         info.uv_size > std::numeric_limits<std::size_t>::max() ||
@@ -892,7 +897,7 @@ class CameraPublisher::Impl {
     if (camera_id >= kMaxCameras || !image_publishers_[camera_id]) {
       throw std::runtime_error("invalid SC132 camera id");
     }
-    sensor_msgs::msg::Image image;
+    auto& image = image_messages_[camera_id];
     AssignStamp(image.header.stamp, HeaderStampFromFrame(info));
     image.header.frame_id = CameraFrameId(config_.frame_id_prefix, camera_id);
     image.height = info.height;
@@ -905,6 +910,8 @@ class CameraPublisher::Impl {
     image.data.resize(y_size + uv_size);
     std::memcpy(image.data.data(), info.y_data, y_size);
     std::memcpy(image.data.data() + y_size, info.uv_data, uv_size);
+    // DDS owns the copied pixels; return scarce capture buffers before publishing.
+    job.Reset();
     // 主Image、压缩Image或辅助CameraInfo任一publish异常都先计数再rethrow，保留worker既有fail-closed语义。
     try {
       if (config_.rate_metrics_enabled) {
@@ -914,6 +921,20 @@ class CameraPublisher::Impl {
       } else {
         image_publishers_[camera_id].publish(image);
       }
+      const auto& e = info.exposure;
+      char json[640];
+      const int length = std::snprintf(json, sizeof(json),
+          "{\"schema\":\"robobaton_exposure_v1\",\"camera_id\":%u,\"sequence\":%" PRIu64
+          ",\"frame_id\":%u,\"raw_frame_id\":%u,\"timestamp_ns\":%" PRIu64
+          ",\"exposure\":{\"status\":%u,\"duration_ns\":%" PRIu64
+          ",\"source_frame_id\":%u,\"source_timestamp\":%" PRIu64 ",\"observed_raw_ns\":%" PRIu64 "}}",
+          camera_id, info.sequence, info.frame_id, info.raw_frame_id, info.timestamp_ns,
+          e.status, e.duration_ns, e.source_frame_id, e.source_timestamp, e.observed_raw_ns);
+      if (length < 0 || static_cast<size_t>(length) >= sizeof(json))
+        throw std::runtime_error("format exposure metadata failed");
+      auto& exposure_message = exposure_messages_[camera_id];
+      exposure_message.data.assign(json, static_cast<size_t>(length));
+      exposure_publishers_[camera_id]->publish(exposure_message);
       if (camera_info_publishers_[camera_id]) {
         sensor_msgs::msg::CameraInfo camera_info;
         camera_info.header = image.header;
@@ -938,10 +959,12 @@ class CameraPublisher::Impl {
 
   rclcpp::Node* node_;
   Config config_;
-  const SensorTimestampMapper& timestamp_mapper_;
   CameraLifecycleCore& core_;
   bool started_ = false;
   std::array<image_transport::Publisher, kMaxCameras> image_publishers_{};
+  std::array<sensor_msgs::msg::Image, kMaxCameras> image_messages_;
+  std::array<rclcpp::Publisher<std_msgs::msg::String>::SharedPtr, kMaxCameras> exposure_publishers_{};
+  std::array<std_msgs::msg::String, kMaxCameras> exposure_messages_;
   std::array<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr, kMaxCameras>
       camera_info_publishers_{};
   rclcpp::TimerBase::SharedPtr rate_timer_;

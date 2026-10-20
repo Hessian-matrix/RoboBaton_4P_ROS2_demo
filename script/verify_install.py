@@ -34,7 +34,7 @@ LIBRARIES = {
     "icm42670": {
         "names": ("libicm42670.so.2.0.0", "libicm42670.so.2", "libicm42670.so"),
         "soname": "libicm42670.so.2",
-        "versions": ("ICM42670_X5_2.0",),
+        "versions": ("ICM42670_X5_2.0", "ICM42670_X5_2.1"),
     },
     "sc132": {
         "names": ("libsc132.so.2.0.0", "libsc132.so.2", "libsc132.so"),
@@ -171,7 +171,7 @@ def required_symbol_versions(spec: dict[str, object]) -> set[str]:
 
 NODE_LIBRARY_KEYS = ("icm42670", "sc132")
 # Node needs reflect used symbols; each producer separately supplies its complete version definitions.
-NODE_REQUIRED_VERSIONS = {"ICM42670_X5_2.0", "LIBSC132_2.0"}
+NODE_REQUIRED_VERSIONS = {"ICM42670_X5_2.0", "ICM42670_X5_2.1", "LIBSC132_2.0"}
 PLUGIN_PLATFORM_SONAMES = {"libmultimedia.so.1", "libhbmem.so.1", "libalog.so.1"}
 
 

@@ -4,11 +4,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <functional>
 
 #include <rclcpp/rclcpp.hpp>
 
 #include "robobaton_4p_ros2_demo/cam_demo_common.h"
-#include "robobaton_4p_ros2_demo/timestamp_mapper.hpp"
 
 namespace robobaton_4p_ros2_demo {
 
@@ -20,7 +20,6 @@ class CameraPublisher {
   };
 
   struct Config {
-    const SensorTimestampMapper* timestamp_mapper = nullptr;
     robobaton_demo::Options options;
     std::size_t queue_capacity = 4;
     QueuePolicy queue_policy = QueuePolicy::kBlock;
@@ -32,6 +31,7 @@ class CameraPublisher {
     bool rate_metrics_enabled = false;
     uint32_t rate_log_period_ms = 1000U;
     std::string rate_run_id;
+    std::function<void(const sc132_frame_set_t&)> fsync_group_sink;
   };
 
   // 节点统一管理生命周期；本类只封装 X5 相机采集与 ROS 发布资源。

@@ -5,6 +5,8 @@ robobaton_fastdds_profile="$robobaton_current_prefix/share/@PROJECT_NAME@/config
 if [ -n "$robobaton_current_prefix" ] && [ -f "$robobaton_fastdds_profile" ]; then
   export FASTDDS_DEFAULT_PROFILES_FILE="$robobaton_fastdds_profile"
   export FASTRTPS_DEFAULT_PROFILES_FILE="$robobaton_fastdds_profile"
+  # Honor per-topic publication modes and reallocating history from this profile.
+  export RMW_FASTRTPS_USE_QOS_FROM_XML=1
 fi
 unset robobaton_fastdds_profile
 unset robobaton_current_prefix

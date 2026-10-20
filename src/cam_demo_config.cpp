@@ -54,22 +54,15 @@ void ValidateCameraOptions(const Options& options) {
   if (options.frame_set_timeout_ms == 0U || options.frame_set_max_skew_ns == 0U) {
     throw std::invalid_argument("camera frame-set timeout and max skew must be positive");
   }
-  if (options.trigger_mode != "vin_lpwm" && options.trigger_mode != "none") {
-    throw std::invalid_argument("camera.trigger_mode must be vin_lpwm or none");
+  if (options.trigger_mode != "vin_lpwm") {
+    throw std::invalid_argument("camera.trigger_mode must be vin_lpwm");
   }
 }
 
 // 功能：把触发模式写入 libsc132 使用的环境变量。
-// 输入：options.trigger_mode，公开只接受 vin_lpwm、none。
-// 环境变量已预设 SC132_TRIGGER_MODE 时保留预设值，供 software_gpio 调试路径直驱。
+// 输入：options.trigger_mode，只接受 vin_lpwm。
 // 副作用：设置进程内环境变量 SC132_TRIGGER_MODE；触发线路由 libsc132 的板级绑定决定。
 void ConfigureSc132TriggerMode(const Options& options) {
-  const char* preset = std::getenv(kSc132TriggerModeEnv);
-  if (preset != nullptr && preset[0] != '\0') {
-    std::cout << kSc132TriggerModeEnv << "=" << preset
-              << " (preset env retained for software_gpio debug)\n";
-    return;
-  }
   if (setenv(kSc132TriggerModeEnv, options.trigger_mode.c_str(), 1) != 0) {
     throw std::runtime_error("set SC132_TRIGGER_MODE failed");
   }

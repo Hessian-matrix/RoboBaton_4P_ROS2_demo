@@ -29,6 +29,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -132,7 +133,7 @@ add_executable(robobaton_sensors_node
   src/cam_demo_common.cpp
   src/cam_demo_config.cpp)
 
-ament_target_dependencies(robobaton_sensors_node rclcpp sensor_msgs image_transport)
+ament_target_dependencies(robobaton_sensors_node rclcpp sensor_msgs std_msgs image_transport)
 target_include_directories(robobaton_sensors_node PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(robobaton_sensors_node

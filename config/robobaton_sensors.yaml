@@ -27,5 +27,6 @@ robobaton_sensors_node:
       sample_rate_hz: 800
       read_mode: "sensor_timestamp_fifo"
       fifo_watermark_samples: 1
+      fsync_enabled: false
       frame_id: "robobaton_imu_link"
       publish_temperature: true

@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <pthread.h>
+#include <sched.h>
+#include <system_error>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -20,6 +23,31 @@ extern "C" {
 #ifndef ROBOBATON_RELEASE_VERSION
 #define ROBOBATON_RELEASE_VERSION "0.0.0+unknown"
 #endif
+
+namespace {
+// DDS transport owners inherit the creating thread's policy. Vendor pipeline
+// workers must instead inherit normal scheduling so they cannot starve ISP.
+class ScopedThreadScheduling {
+ public:
+  ScopedThreadScheduling(int policy, int priority) {
+    int result = pthread_getschedparam(pthread_self(), &policy_, &parameter_);
+    if (result) throw std::system_error(result, std::generic_category(), "read thread scheduling");
+    sched_param requested{};
+    requested.sched_priority = priority;
+    result = pthread_setschedparam(pthread_self(), policy, &requested);
+    if (result) throw std::system_error(result, std::generic_category(), "set thread scheduling");
+  }
+  ~ScopedThreadScheduling() {
+    if (pthread_setschedparam(pthread_self(), policy_, &parameter_) != 0)
+      std::terminate();
+  }
+  ScopedThreadScheduling(const ScopedThreadScheduling&) = delete;
+  ScopedThreadScheduling& operator=(const ScopedThreadScheduling&) = delete;
+ private:
+  int policy_ = SCHED_OTHER;
+  sched_param parameter_{};
+};
+}
 
 namespace robobaton_4p_ros2_demo {
 
@@ -105,30 +133,47 @@ SensorNode::SensorNode(const rclcpp::NodeOptions& options)
   rate_metrics_enabled_ = LoadRateMetricsEnabled();
   rate_log_period_ms_ = LoadRateLogPeriodMs();
   rate_run_id_ = LoadRateRunId();
+  fsync_enabled_ = DeclareBool(this, "imu.fsync_enabled", false);
+  if (fsync_enabled_) {
+    if (!enable_camera_ || !enable_imu_) throw std::invalid_argument("FSYNC requires camera and IMU");
+    fsync_publisher_ = create_publisher<std_msgs::msg::String>("/robobaton/fsync", rclcpp::QoS(256).reliable());
+    fsync_association_ = std::make_unique<robobaton_demo::FsyncAssociation>(
+        [](const robobaton_demo::FsyncAssociationRecord& record, void* user) {
+          auto* node = static_cast<SensorNode*>(user);
+          char json[1024]; const size_t size = robobaton_demo::FormatFsyncAssociation(record,json,sizeof(json));
+          std_msgs::msg::String message; message.data.assign(json,size); node->fsync_publisher_->publish(message);
+        }, this);
+  }
   StartEnabledPublishers();
 }
 
 SensorNode::~SensorNode() { StopPublishers(); }
 
 void SensorNode::StartEnabledPublishers() {
-  if (enable_imu_) {
-    imu_publisher_ = std::make_unique<ImuPublisher>(this, LoadImuConfig());
-    imu_publisher_->Start();
-  }
-  if (enable_camera_) {
+  if (enable_camera_)
     camera_publisher_ = std::make_unique<CameraPublisher>(this, LoadCameraConfig());
-    camera_publisher_->Start();
-  }
+  if (enable_imu_)
+    imu_publisher_ = std::make_unique<ImuPublisher>(this, LoadImuConfig());
+  ScopedThreadScheduling acquisition_scheduling(SCHED_OTHER, 0);
+  // Establish LPWM before anchoring the IMU FIFO/INT1 epoch.
+  if (camera_publisher_) camera_publisher_->Start();
+  if (imu_publisher_) imu_publisher_->Start();
 }
 
 void SensorNode::StopPublishers() {
+  if (imu_publisher_) {
+    imu_publisher_->Stop();
+    imu_publisher_.reset();
+  }
   if (camera_publisher_) {
     camera_publisher_->Stop();
     camera_publisher_.reset();
   }
-  if (imu_publisher_) {
-    imu_publisher_->Stop();
-    imu_publisher_.reset();
+  try {
+    if (fsync_association_) fsync_association_->Finish();
+  } catch (const std::exception& error) {
+    RecordProcessFailure();
+    RCLCPP_ERROR(get_logger(), "FSYNC finalization failed: %s", error.what());
   }
 }
 
@@ -163,7 +208,6 @@ std::string SensorNode::LoadRateRunId() {
 
 CameraPublisher::Config SensorNode::LoadCameraConfig() {
   CameraPublisher::Config config;
-  config.timestamp_mapper = &timestamp_mapper_;
   auto& options = config.options;
   options.camera_mask =
       DeclareUint32(this, "camera.camera_mask", robobaton_demo::kDefaultCameraMask);
@@ -191,12 +235,12 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
   config.rate_metrics_enabled = rate_metrics_enabled_;
   config.rate_log_period_ms = rate_log_period_ms_;
   config.rate_run_id = rate_run_id_;
+  if (fsync_enabled_) config.fsync_group_sink = [this](const sc132_frame_set_t& set) { fsync_association_->ObserveGroup(set); };
   return config;
 }
 
 ImuPublisher::Config SensorNode::LoadImuConfig() {
   ImuPublisher::Config config;
-  config.timestamp_mapper = &timestamp_mapper_;
   config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 800U);
   if (config.sample_rate_hz != 25U && config.sample_rate_hz != 50U &&
       config.sample_rate_hz != 100U && config.sample_rate_hz != 200U &&
@@ -216,6 +260,10 @@ ImuPublisher::Config SensorNode::LoadImuConfig() {
   config.rate_metrics_enabled = rate_metrics_enabled_;
   config.rate_log_period_ms = rate_log_period_ms_;
   config.rate_run_id = rate_run_id_;
+  if (fsync_enabled_) {
+    if (config.sample_rate_hz < 800) throw std::invalid_argument("FSYNC requires 800 or 1600 Hz");
+    config.fsync_sink = [this](const icm42670_fsync_event_t& event) { fsync_association_->ObserveEvent(event); };
+  }
   return config;
 }
 
@@ -233,7 +281,11 @@ int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   int exit_code = 0;
   try {
-    auto node = std::make_shared<robobaton_4p_ros2_demo::SensorNode>();
+    std::shared_ptr<robobaton_4p_ros2_demo::SensorNode> node;
+    {
+      ScopedThreadScheduling dds_scheduling(SCHED_RR, 5);
+      node = std::make_shared<robobaton_4p_ros2_demo::SensorNode>();
+    }
     rclcpp::spin(node);
     node.reset();
   } catch (const std::exception& error) {

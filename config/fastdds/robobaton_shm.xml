@@ -16,4 +16,45 @@
       <useBuiltinTransports>false</useBuiltinTransports>
     </rtps>
   </participant>
+  <publisher profile_name="robobaton_default_writer" is_default_profile="true">
+    <qos>
+      <publishMode><kind>SYNCHRONOUS</kind></publishMode>
+      <data_sharing><kind>OFF</kind></data_sharing>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </publisher>
+  <subscriber profile_name="robobaton_default_reader" is_default_profile="true">
+    <qos><data_sharing><kind>OFF</kind></data_sharing></qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </subscriber>
+  <!-- Large images use the DDS send owner; small sensor/association records
+       stay synchronous so image history cannot delay or evict them. -->
+  <publisher profile_name="/robobaton/cam0/image_raw">
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+      <data_sharing><kind>OFF</kind></data_sharing>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </publisher>
+  <publisher profile_name="/robobaton/cam1/image_raw">
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+      <data_sharing><kind>OFF</kind></data_sharing>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </publisher>
+  <publisher profile_name="/robobaton/cam2/image_raw">
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+      <data_sharing><kind>OFF</kind></data_sharing>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </publisher>
+  <publisher profile_name="/robobaton/cam3/image_raw">
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+      <data_sharing><kind>OFF</kind></data_sharing>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </publisher>
 </profiles>
