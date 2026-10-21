@@ -32,7 +32,7 @@ ROS_TRANSITIVE_RUNTIME_LIBS = (
 )
 LIBRARIES = {
     "icm42688": {
-        "names": ("libicm42688.so.2.1.0", "libicm42688.so.2", "libicm42688.so"),
+        "names": ("libicm42688.so.2.1.1", "libicm42688.so.2", "libicm42688.so"),
         "soname": "libicm42688.so.2",
         "versions": ("ICM42688_X5_2.0", "ICM42688_X5_2.1"),
     },

@@ -12,6 +12,7 @@
 
 #include "robobaton_4p_ros2_demo/icm42688_driver.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -21,6 +22,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 #ifndef RELEASE008_CONTRACT_TEST
@@ -87,6 +89,16 @@ class ImuLifecycleCore {
     }
 
     admission_.store(true, std::memory_order_release);
+    try {
+      publisher_ = std::thread([this] { PublishLoop(); });
+    } catch (...) {
+      admission_.store(false, std::memory_order_release);
+      icm42688_destroy(handle_);
+      handle_ = nullptr;
+      terminal_ = true;
+      RecordFailure();
+      return false;
+    }
     start_attempted_ = true;
     const int start_status = icm42688_start(handle_);
     if (start_status != ICM42688_STATUS_OK) {
@@ -95,6 +107,7 @@ class ImuLifecycleCore {
       if (stop_status != ICM42688_STATUS_OK) {
         stop_failed_.store(true, std::memory_order_release);
       }
+      FinishPublisher();
       // start 部分失败仍由唯一 owner destroy 非空 C handle。
       icm42688_destroy(handle_);
       handle_ = nullptr;
@@ -104,7 +117,6 @@ class ImuLifecycleCore {
       notifier_ = {};
       return false;
     }
-    running_ = true;
     return true;
   }
 
@@ -114,21 +126,23 @@ class ImuLifecycleCore {
       return !stop_failed_.load(std::memory_order_acquire);
     }
     terminal_ = true;
-    admission_.store(false, std::memory_order_release);
     int stop_status = ICM42688_STATUS_OK;
     if (handle_ != nullptr && start_attempted_) {
       // context 保持到 blocking stop 返回；即使 stop 失败，仍执行唯一 destroy finalizer。
       stop_status = icm42688_stop(handle_);
       if (stop_status != ICM42688_STATUS_OK) {
         stop_failed_.store(true, std::memory_order_release);
-        RecordFailure();
       }
     }
+    // Blocking producer stop joins its callback before admission closes.
+    // The publication worker then drains all admitted samples on normal stop.
+    admission_.store(false, std::memory_order_release);
+    FinishPublisher();
     if (handle_ != nullptr) {
       icm42688_destroy(handle_);
       handle_ = nullptr;
     }
-    running_ = false;
+    if (stop_status != ICM42688_STATUS_OK) RecordFailure();
     sink_ = {};
     notifier_ = {};
     return stop_status == ICM42688_STATUS_OK;
@@ -139,26 +153,73 @@ class ImuLifecycleCore {
  private:
   static void SampleTrampoline(const icm42688_sample_t* sample, void* user_data) noexcept {
     auto* owner = static_cast<ImuLifecycleCore*>(user_data);
+    uint64_t arrival_ns = 0U;
+    if (owner != nullptr && owner->metrics_enabled_ && sample != nullptr &&
+        sample->struct_size == sizeof(*sample)) {
+      arrival_ns = SteadyNowNs();
+      if (owner->source_count_.load(std::memory_order_relaxed) == 0U) {
+        owner->source_first_ns_.store(arrival_ns, std::memory_order_relaxed);
+      }
+      owner->source_count_.fetch_add(1U, std::memory_order_release);
+    }
     if (owner == nullptr || !owner->admission_.load(std::memory_order_acquire)) {
       return;
     }
-    try {
-      if (sample == nullptr || sample->struct_size != sizeof(*sample)) {
-        throw std::runtime_error("invalid ICM sample");
-      }
-      // 默认关闭时不读取clock、不进入metrics mutex/atomic；启用后在ROS sink前记录producer输入。
-      if (owner->metrics_enabled_) {
-        owner->metrics_.RecordSourceWithoutSequence(sample->sample_timestamp_ns,
-                                                    SteadyNowNs());
-      }
-      owner->sink_(*sample);
-    } catch (...) {
+    if (sample == nullptr || sample->struct_size != sizeof(*sample)) {
       owner->admission_.store(false, std::memory_order_release);
-      owner->RecordFailure();
+      owner->failed_.store(true, std::memory_order_release);
+      return;
+    }
+    const auto write = owner->write_.load(std::memory_order_relaxed);
+    if (write - owner->read_.load(std::memory_order_acquire) == kPendingCapacity) {
+      owner->admission_.store(false, std::memory_order_release);
+      owner->failed_.store(true, std::memory_order_release);
+      return;
+    }
+    auto& pending = owner->pending_[write % kPendingCapacity];
+    pending.sample = *sample;
+    pending.arrival_ns = arrival_ns;
+    owner->write_.store(write + 1U, std::memory_order_release);
+  }
+
+  void PublishLoop() noexcept {
+    for (;;) {
+      if (failed_.load(std::memory_order_acquire)) {
+        RecordFailure();
+        return;
+      }
+      const auto read = read_.load(std::memory_order_relaxed);
+      if (read != write_.load(std::memory_order_acquire)) {
+        const auto pending = pending_[read % kPendingCapacity];
+        read_.store(read + 1U, std::memory_order_release);
+        try {
+          if (metrics_enabled_) {
+            metrics_.RecordSourceWithoutSequence(pending.sample.sample_timestamp_ns,
+                                                 pending.arrival_ns);
+          }
+          sink_(pending.sample);
+        } catch (...) {
+          admission_.store(false, std::memory_order_release);
+          RecordFailure();
+          return;
+        }
+        continue;
+      }
+      if (publisher_stop_.load(std::memory_order_acquire)) {
+        // Reload after observing stop: its release follows the producer join.
+        if (read == write_.load(std::memory_order_acquire)) return;
+        continue;
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
   }
 
-  // callback和ROS publisher统一使用steady clock纳秒，避免wall/ROS时间调整污染区间与耗时。
+  void FinishPublisher() noexcept {
+    publisher_stop_.store(true, std::memory_order_release);
+    if (publisher_.joinable()) publisher_.join();
+  }
+
+  // Arrival and publication latency use steady clock, independent of ROS time.
   static uint64_t SteadyNowNs() noexcept {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now().time_since_epoch())
@@ -172,7 +233,7 @@ class ImuLifecycleCore {
       metrics_.RecordPublishSuccess(latency_ns);
     }
   }
-  // 主/辅助ROS publish异常统一计入同一门禁，并由callback继续触发既有fail-closed。
+  // 主IMU和辅助Temperature共享发布失败门禁。
   void RecordPublishFailure() noexcept {
     if (metrics_enabled_) {
       metrics_.RecordPublishFailure();
@@ -187,12 +248,19 @@ class ImuLifecycleCore {
   }
 
   robobaton_4p_ros2_demo::PublicationRateSnapshot Snapshot(uint64_t monotonic_ns) const noexcept {
-    return metrics_.Snapshot(monotonic_ns);
+    auto value = metrics_.Snapshot(monotonic_ns);
+    if (metrics_enabled_) {
+      // Input counts follow acquisition even while publication is stalled or failed.
+      value.source_count = source_count_.load(std::memory_order_acquire);
+      value.interval_start_monotonic_ns = source_first_ns_.load(std::memory_order_relaxed);
+    }
+    return value;
   }
 
  private:
   void RecordFailure() noexcept {
-    const bool first = !failed_.exchange(true, std::memory_order_acq_rel);
+    failed_.store(true, std::memory_order_release);
+    const bool first = !failure_notified_.exchange(true, std::memory_order_acq_rel);
     if (first && notifier_) {
       try {
         notifier_();
@@ -202,18 +270,34 @@ class ImuLifecycleCore {
   }
 
   std::mutex mutex_;
+  static constexpr std::size_t kPendingCapacity = 1024U;
+  struct PendingSample {
+    icm42688_sample_t sample{};
+    uint64_t arrival_ns = 0U;
+  };
+  // Only the producer writes write_; only the publisher writes read_.
+  // Capacity is fixed; exhausted admission fails closed without waiting or overwrite.
+  static_assert(std::atomic<std::size_t>::is_always_lock_free,
+                "IMU dispatch requires lock-free indices");
+  std::array<PendingSample, kPendingCapacity> pending_{};
+  std::atomic<std::size_t> write_{0U};
+  std::atomic<std::size_t> read_{0U};
+  std::atomic<bool> publisher_stop_{false};
+  std::atomic<bool> failure_notified_{false};
+  std::thread publisher_;
   icm42688_handle_t* handle_ = nullptr;
   Sink sink_;
   FailureNotifier notifier_;
   std::atomic<bool> admission_{false};
   std::atomic<bool> failed_{false};
   std::atomic<bool> stop_failed_{false};
+  std::atomic<uint64_t> source_count_{0U};
+  std::atomic<uint64_t> source_first_ns_{0U};
   robobaton_4p_ros2_demo::PublicationRateMetrics metrics_{
       robobaton_4p_ros2_demo::SequenceWidth::kNone};
   bool metrics_enabled_ = false;
   bool start_claimed_ = false;
   bool start_attempted_ = false;
-  bool running_ = false;
   bool terminal_ = false;
 };
 
@@ -403,7 +487,7 @@ class ImuPublisher::Impl {
                                      .count());
   }
 
-  // IMU样本很小，直接在ICM回调线程发布可避免每样本线程唤醒和队列背压丢样。
+  // 专用publisher线程按采集顺序发布；ROS分配和传输不阻塞GPIO/FIFO采集。
   void PublishSample(const icm42688_sample_t& sample) {
     sensor_msgs::msg::Imu imu;
     AssignStamp(imu.header.stamp,
@@ -417,7 +501,7 @@ class ImuPublisher::Impl {
     imu.linear_acceleration.x = sample.accel_mps2[0];
     imu.linear_acceleration.y = sample.accel_mps2[1];
     imu.linear_acceleration.z = sample.accel_mps2[2];
-    // 主IMU或辅助Temperature任一publish异常都先计数再rethrow，保留callback既有fail-closed语义。
+    // 主IMU或辅助Temperature任一publish异常都计数并终止发布。
     try {
       if (config_.rate_metrics_enabled) {
         const uint64_t publish_start_ns = SteadyNowNs();

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
+#include <csignal>
 #include <exception>
 #include <memory>
 #include <stdexcept>
@@ -25,6 +26,13 @@ namespace robobaton_4p_ros2_demo {
 
 namespace {
 std::atomic<bool> g_process_failed{false};
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "signal requests require lock-free atomic operations");
+std::atomic<bool> g_stop_requested{false};
+
+void RequestStop(int) noexcept {
+  g_stop_requested.store(true, std::memory_order_relaxed);
+}
 }
 
 void RecordProcessFailure() noexcept {
@@ -230,11 +238,20 @@ int main(int argc, char** argv) {
                 SC132_ABI_VERSION_MAJOR, SC132_ABI_VERSION_MINOR);
     return 0;
   }
-  rclcpp::init(argc, argv);
+  // Signals request an executor exit; ROS stays valid until publisher queues drain.
+  std::signal(SIGINT, robobaton_4p_ros2_demo::RequestStop);
+  std::signal(SIGTERM, robobaton_4p_ros2_demo::RequestStop);
+  rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
   int exit_code = 0;
   try {
     auto node = std::make_shared<robobaton_4p_ros2_demo::SensorNode>();
-    rclcpp::spin(node);
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(node);
+    while (!robobaton_4p_ros2_demo::g_stop_requested.load(std::memory_order_relaxed) && rclcpp::ok() &&
+           !robobaton_4p_ros2_demo::ProcessFailed()) {
+      executor.spin_once(std::chrono::milliseconds(100));
+    }
+    executor.remove_node(node);
     node.reset();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "fatal: %s\n", error.what());
