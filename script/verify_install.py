@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify the canonical-layout ROS2 merged install against ABI-v2 producers."""
+"""Verify the canonical-layout ROS2 merged install against current producers."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -32,14 +33,14 @@ ROS_TRANSITIVE_RUNTIME_LIBS = (
 )
 LIBRARIES = {
     "icm42670": {
-        "names": ("libicm42670.so.2.0.0", "libicm42670.so.2", "libicm42670.so"),
-        "soname": "libicm42670.so.2",
-        "versions": ("ICM42670_X5_2.0", "ICM42670_X5_2.1"),
+        "names": ("libicm42670.so.3.0.0", "libicm42670.so.3", "libicm42670.so"),
+        "soname": "libicm42670.so.3",
+        "versions": ("ICM42670_X5_3.0",),
     },
     "sc132": {
-        "names": ("libsc132.so.2.0.0", "libsc132.so.2", "libsc132.so"),
-        "soname": "libsc132.so.2",
-        "versions": ("LIBSC132_2.0",),
+        "names": ("libsc132.so.3.0.0", "libsc132.so.3", "libsc132.so"),
+        "soname": "libsc132.so.3",
+        "versions": ("LIBSC132_3.0",),
     },
 }
 
@@ -171,7 +172,7 @@ def required_symbol_versions(spec: dict[str, object]) -> set[str]:
 
 NODE_LIBRARY_KEYS = ("icm42670", "sc132")
 # Node needs reflect used symbols; each producer separately supplies its complete version definitions.
-NODE_REQUIRED_VERSIONS = {"ICM42670_X5_2.0", "ICM42670_X5_2.1", "LIBSC132_2.0"}
+NODE_REQUIRED_VERSIONS = {"ICM42670_X5_3.0", "LIBSC132_3.0"}
 PLUGIN_PLATFORM_SONAMES = {"libmultimedia.so.1", "libhbmem.so.1", "libalog.so.1"}
 
 
@@ -180,9 +181,29 @@ def artifact_names() -> list[str]:
     for spec in LIBRARIES.values():
         names.extend(spec["names"])
     return sorted(names)
+def verify_library_links(runtime_dir: Path) -> None:
+    for library, spec in LIBRARIES.items():
+        real_name, soname_name, linker_name = spec["names"]
+        actual_names = {path.name for path in runtime_dir.iterdir()
+                        if path.name == linker_name or path.name.startswith(linker_name + ".")}
+        if actual_names != set(spec["names"]):
+            raise AssertionError(
+                f"{library} producer inventory mismatch: "
+                f"{sorted(actual_names)} != {sorted(spec['names'])}"
+            )
+        real = runtime_dir / real_name
+        if not real.is_file() or real.is_symlink():
+            raise AssertionError(f"missing regular {library} library: {real}")
+        for name, target in ((soname_name, real_name), (linker_name, soname_name)):
+            path = runtime_dir / name
+            if not path.is_symlink() or os.readlink(path) != target or not path.is_file():
+                raise AssertionError(f"invalid producer link: {path} must point to {target}")
+
+
 
 
 def write_manifest(runtime_dir: Path) -> None:
+    verify_library_links(runtime_dir)
     lines = [f"{sha256(runtime_dir / name)}  {name}" for name in artifact_names()]
     (runtime_dir / MANIFEST).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -204,6 +225,7 @@ def verify_plugin_registration(install_dir: Path) -> None:
 
 
 def verify_manifest(runtime_dir: Path) -> None:
+    verify_library_links(runtime_dir)
     manifest = runtime_dir / MANIFEST
     if not manifest.is_file() or manifest.is_symlink():
         raise AssertionError(f"missing regular manifest: {manifest}")
@@ -233,7 +255,9 @@ def verify_executable(runtime_dir: Path, install_dir: Path, name: str) -> Path:
 def verify_no_legacy_imu(install_dir: Path) -> None:
     checked: set[Path] = set()
     for path in install_dir.rglob("*"):
-        if path.name == "icm42688_driver.h" or path.name.startswith("libicm42688.so"):
+        if (path.name == "icm42688_driver.h" or path.name.startswith("libicm42688.so") or
+                path.name.startswith("libicm42670.so.") and
+                path.name not in LIBRARIES["icm42670"]["names"]):
             raise AssertionError(f"legacy IMU artifact leaked into release install: {path}")
         if not path.is_file():
             continue
@@ -244,7 +268,8 @@ def verify_no_legacy_imu(install_dir: Path) -> None:
         with path.open("rb") as stream:
             if stream.read(4) != b"\x7fELF":
                 continue
-        legacy = [name for name in needed(path) if name.startswith("libicm42688.so")]
+        legacy = [name for name in needed(path) if name.startswith("libicm42688.so") or
+                  name.startswith("libicm42670.so") and name != LIBRARIES["icm42670"]["soname"]]
         if legacy:
             raise AssertionError(f"legacy IMU dependencies in {path}: {legacy}")
 
@@ -284,6 +309,7 @@ def verify(install_dir: Path) -> None:
             f"node version needs missing: {sorted(NODE_REQUIRED_VERSIONS - node_versions)}"
         )
     old_versions = {value for value in node_versions if value.startswith("ICM42688_") or
+                    value.startswith("ICM42670_X5_") and value != "ICM42670_X5_3.0" or
                     (value.endswith("_1.0") and value.startswith("LIBSC132_"))}
     if old_versions:
         raise AssertionError(f"node retains old ABI needs: {sorted(old_versions)}")
@@ -300,14 +326,7 @@ def verify(install_dir: Path) -> None:
         raise AssertionError(f"plugin RUNPATH is not package-relative: {plugin_runpath!r}")
 
     for library, spec in LIBRARIES.items():
-        paths = [runtime_dir / name for name in spec["names"]]
-        for path in paths:
-            if not path.is_file():
-                raise AssertionError(f"missing {library} package entry: {path}")
-        hashes = {sha256(path) for path in paths}
-        if len(hashes) != 1:
-            raise AssertionError(f"{library} version chain bytes differ: {sorted(hashes)}")
-        real = paths[0]
+        real = runtime_dir / spec["names"][0]
         if soname(real) != spec["soname"]:
             raise AssertionError(f"{library} SONAME mismatch: {soname(real)!r}")
         missing_versions = required_symbol_versions(spec) - versions(real)
@@ -330,7 +349,7 @@ def main() -> int:
     if args.write_manifest:
         write_manifest(runtime_dir)
     verify(install_dir)
-    print(f"ROS2 ABI-v2 install verified: {install_dir}")
+    print(f"ROS2 ABI install verified: {install_dir}")
     return 0
 
 

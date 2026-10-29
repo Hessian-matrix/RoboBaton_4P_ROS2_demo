@@ -4,7 +4,7 @@ RoboBaton 4P V2 的 ROS2 `ament_cmake` 示例包，发布 SC132 四目 NV12 图�
 
 > **最终用户说明以 [4P_doc](https://4p-docs.readthedocs.io/zh-cn/latest/index.html) 为准。** 本 README 只保留 ROS2 仓库入口、最小构建/运行方式和支持边界。
 
-当前源码使用 `icm42670_*` / `icm42670_driver.h`，SONAME `libicm42670.so.2`、real SO `libicm42670.so.2.0.0`；IMU ABI 2.1 的基础函数保留 `ICM42670_X5_2.0`，新增 FSYNC callback 使用 `ICM42670_X5_2.1`。请成套更新头文件、库、配置与 consumer；历史 V1 包和验收不能替代 V2 检查，软件版本与文档修订独立，同一版本字符串不能代替工件 manifest。
+当前源码使用 `icm42670_*` / `icm42670_driver.h`，IMU ABI 3.0、SONAME `libicm42670.so.3`、real SO `libicm42670.so.3.0.0`，全部导出只使用 `ICM42670_X5_3.0`。须成套重建头文件、库、配置与 consumer，移除旧 `.2` 库，不建立跨 major 链接或旧符号别名；软件 VERSION 不变，manifest 才能区分组成。FIFO 顺序与实测 TMST 定义样本身份和时间，INT1 仅唤醒；`host_timestamp_ns` 为该包 SPI FIFO burst 成功完成时的 RAW 观测，经当次系统时钟桥接转换为 realtime，同 burst 可重复，FSYNC 延迟发布保留转换后的原值，不在发布时重新换算旧 RAW；随墙钟回拨，不是 IRQ 沿/样本/曝光时间。ROS2 继续用实测 TMST→RAW→realtime 的 `sample_timestamp_ns`，以 `sample_sequence` 判顺序；GPIO 通知缺口仅诊断、不单独失败。`200µs` admission、坏包/FIFO overflow/时钟歧义/无效 epoch 的失败边界不变。本架构不修复底层 GPIO/内核原因、不改 LPWM/内核、不承诺任意负载零丢失。
 
 ## 目标产物
 
@@ -32,6 +32,8 @@ RoboBaton 4P V2 的 ROS2 `ament_cmake` 示例包，发布 SC132 四目 NV12 图�
 
 曝光 topic 为 Reliable KeepLast(8)；按相机及 Image stamp 关联并无损解析整数 JSON，不把 `source_timestamp` 当 realtime。FSYNC 默认关闭、Reliable KeepLast(256)，必须与实际收到的 Image/CameraInfo/IMU 样本核对；关联 JSON 不是 DDS 全部送达证明。
 
+上述为默认触发沿语义。显式 `SC132_TEST_EXPOSURE_MIDPOINT=1` 测试模式会把图像、CameraInfo 和曝光 topic 的 stamp 改为触发时间加半曝光估计；不改变 IMU，不是已校准曝光中心，曝光不可用时停止。仅重建了支持开关的库后可用，详见[数据合同](https://4p-docs.readthedocs.io/zh-cn/latest/development/data-contracts.html#test-exposure-midpoint)。
+
 ## 版本查询
 
 安装后执行：
@@ -55,6 +57,8 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 - Ubuntu 22.04 x86_64 主机、ROS Humble 和 `python3-colcon-common-extensions`；按下方源码编译页配置官方软件源并安装，系统 Python 必须能导入 ament。
 
 本仓库只构建 ROS2 consumer 和 compressed image_transport plugin，不从父仓库读取 producer 源码，也不在这里重新构建 producer 库。
+
+`lib/` 与 `install/lib/robobaton_4p_ros2_demo/` 中的 ICM/SC132 使用一份 `libNAME.so.M.m.p` 实体、`libNAME.so.M -> libNAME.so.M.m.p`、`libNAME.so -> libNAME.so.M` 两个同目录相对链接。CMake 和 install verifier 拒绝展开为普通文件的别名及错误链接；ROS2 不包含 PRRTSP。完整交付请用保留链接的 `tar`、`cp -a` 或 `rsync -a`；`abi_manifest.sha256` 的解析后字节校验不能单独证明链接元数据正确。
 
 ```bash
 export X5_TOOLCHAIN_ROOT="/path/to/x5_4cam_cross_toolchain_20261009"
@@ -96,6 +100,8 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 
 默认 `imu.sample_rate_hz=800`，monitor 的稳定窗口应接近 `800Hz`。相机帧率和 IMU 采样率相互独立。
 
+当前源码 FastDDS profile 为每个 participant 预留 `256 MiB`；三个独立进程至少需 `768 MiB` 加 DDS 元数据和端口资源。启动前检查 `/dev/shm`、可用 RAM 及其他 participant，订阅端使用相同 profile。容量加固不代表全部历史 SHM 初始化错误已定位，也不保证任意进程数或负载。
+
 ## 支持边界摘要
 
 - 相机支持 `25/30/40/50/60fps`，默认 `30fps`；只支持单路或完整四路，不支持 2/3 路组合。
@@ -105,7 +111,10 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 - 所有相机采集入口仅支持 `vin_lpwm`（VIN LPWM 硬件触发）。相机硬件触发沿与 IMU 样本经内部 RAW 映射统一为 `CLOCK_REALTIME`；Image/CameraInfo 与 IMU/Temperature 的 `header.stamp` 原样保留 producer 时间，不添加 offset。运行中跟随系统校时，允许回拨；不是仿真 `/clock`，`use_sim_time` 不转换这些 stamp。相机需要 X5 `/dev/mem` 只读访问；映射缺失/超窗即停止，不使用到帧或 IRQ 时间兜底。INT1 为 `34120000.gpio` offset `8`。同域和共用 LPWM IO 不保证样本/曝光关联；不提供 TF、外参、相机标定或可用的 IMU orientation。
 - `CameraInfo` 只有当前帧宽高，标定字段为空；完整时间戳和 buffer 语义见数据合同。
 - 设置 `imu.fsync_enabled:=true` 和 `imu.sample_rate_hz:=1600` 可开启 `/robobaton/fsync`（Reliable KeepLast(256)，`std_msgs/msg/String` JSON，默认关闭，仅支持 `800/1600Hz`）。仅 `status=1` 是唯一触发—样本匹配；它不改变 IMU 采样相位，不保证每个触发或曝光同步。
-- IMU 发布线程使用 `SCHED_RR/3`，采集 owner 使用 `SCHED_FIFO/20`，相机 RAW observer 使用 `SCHED_FIFO/60`，独立 INT1 时钟 observer 使用 `SCHED_FIFO/30`；两个 observer 均继承允许 CPU 集合、每轮休眠 `50µs`，需实时调度权限。INT1 observer 低于板端默认 GPIO IRQ 的 FIFO/50，并在 SPI 等待和 callback 延迟期间保留沿时证书。跨优先级队列使用优先级继承锁；应用不自动修改系统 IRQ/debug。压测须核对 stop 后最终 `IMU_RUNTIME_HEALTH`、四路持续速率和实际 DDS IMU/图像载荷，不以 topic 存在或关联 JSON 单独判定送达。
+- IMU 发布线程使用 `SCHED_RR/3`，采集 owner 使用 `SCHED_FIFO/20`，相机 RAW observer 使用 `SCHED_FIFO/60`、继承允许 CPU 集合并每轮休眠 `50µs`，需实时调度权限。IMU 不再使用独立 INT1 时钟 observer 或包/沿身份匹配；GPIO 通知序号缺口仅诊断、不单独失败。跨优先级队列使用优先级继承锁；应用不自动修改 IRQ/debug 或实时配额，重构不修复底层 GPIO/kernel 根因。压测须核对 stop 后最终 `IMU_RUNTIME_HEALTH`、四路持续速率和实际 DDS IMU/图像载荷，不以 topic 存在或关联 JSON 单独证明送达。
+- `diagnostics.rate_metrics_enabled=false` 时，最终 `IMU_RUNTIME_HEALTH` 明示 `imu_published_samples=unavailable imu_publish_count_valid=no`；开启后显示实际 IMU `publish()` 成功次数并标记 `yes`。它不是 DDS 接收确认；`published_samples` 始终是独立的 producer 健康计数。关闭诊断不额外读取时钟或更新 metrics。
+- 正常 SIGINT/SIGTERM 由 owner 先停止 producer、接纳并排空停止前回调，再析构节点，最后关闭 ROS context；致命错误仍按失败处理。修复后四目30fps＋IMU1600Hz短窗 smoke 的 producer/sink/DDS 数量相等，不证明历史差1根因或持续完整性。此前60fps持续候选未达到请求帧率，尚无最终组成的关闭证据；non-ROS console 成功不能替代 ROS2 高档或保存验收，不承诺全组合零丢失或新组成8小时稳定。
+- 源码、本地 install、板上正式 install 与正式发布分别识别；一次 install verifier 通过不代表目标板已升级。LPWM 捕获超窗仍显式停止，SHM 容量改善不等于历史初始化错误根因已关闭。统一限制见[发布与支持](https://4p-docs.readthedocs.io/zh-cn/latest/release-and-support.html)。
 
 ## 详细文档
 

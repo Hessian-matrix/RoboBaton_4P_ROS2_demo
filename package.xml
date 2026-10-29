@@ -3,7 +3,7 @@
 <package format="3">
   <name>robobaton_4p_ros2_demo</name>
   <version>2.0.0</version>
-  <description>ROS2 demo that publishes RoboBaton 4P SC132 camera images and ICM-42688 IMU samples.</description>
+  <description>ROS2 demo that publishes RoboBaton 4P SC132 camera images and ICM-42670-P IMU samples.</description>
   <maintainer email="taolong.xia@hessian-matrix.com">RoboBaton</maintainer>
   <license>Apache-2.0</license>
 

@@ -66,13 +66,13 @@ set_target_properties(X5MediaCodec::Alog PROPERTIES
 
 get_filename_component(DEFAULT_ROBOBATON_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib" ABSOLUTE)
 set(ROBOBATON_LIB_DIR "${DEFAULT_ROBOBATON_LIB_DIR}" CACHE PATH
-  "Existing package library directory containing synchronized ABI-v2 producers")
+  "Existing package library directory containing synchronized producers")
 
-set(ICM42670_REAL "${ROBOBATON_LIB_DIR}/libicm42670.so.2.0.0")
-set(ICM42670_SONAME "${ROBOBATON_LIB_DIR}/libicm42670.so.2")
+set(ICM42670_REAL "${ROBOBATON_LIB_DIR}/libicm42670.so.3.0.0")
+set(ICM42670_SONAME "${ROBOBATON_LIB_DIR}/libicm42670.so.3")
 set(ICM42670_LINKER "${ROBOBATON_LIB_DIR}/libicm42670.so")
-set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.0")
-set(SC132_SONAME "${ROBOBATON_LIB_DIR}/libsc132.so.2")
+set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.3.0.0")
+set(SC132_SONAME "${ROBOBATON_LIB_DIR}/libsc132.so.3")
 set(SC132_LINKER "${ROBOBATON_LIB_DIR}/libsc132.so")
 
 foreach(required_path
@@ -87,20 +87,44 @@ foreach(required_path
     "${ICM42670_REAL}" "${ICM42670_SONAME}" "${ICM42670_LINKER}"
     "${SC132_REAL}" "${SC132_SONAME}" "${SC132_LINKER}")
   if(NOT EXISTS "${required_path}")
-    message(FATAL_ERROR "Missing required RoboBaton ABI-v2 artifact: ${required_path}")
+    message(FATAL_ERROR "Missing required RoboBaton producer artifact: ${required_path}")
   endif()
+endforeach()
+
+foreach(library icm42670 sc132)
+  string(TOUPPER "${library}" library_key)
+  get_filename_component(real_name "${${library_key}_REAL}" NAME)
+  get_filename_component(soname_name "${${library_key}_SONAME}" NAME)
+  get_filename_component(linker_name "${${library_key}_LINKER}" NAME)
+  if(IS_SYMLINK "${ROBOBATON_LIB_DIR}/${real_name}")
+    message(FATAL_ERROR "Producer real library must be a regular file: ${real_name}")
+  endif()
+  foreach(name "${soname_name}" "${linker_name}")
+    if(NOT IS_SYMLINK "${ROBOBATON_LIB_DIR}/${name}")
+      message(FATAL_ERROR "Producer alias must be a relative symlink: ${name}")
+    endif()
+    file(READ_SYMLINK "${ROBOBATON_LIB_DIR}/${name}" target)
+    if(name STREQUAL soname_name)
+      set(expected_target "${real_name}")
+    else()
+      set(expected_target "${soname_name}")
+    endif()
+    if(NOT target STREQUAL expected_target)
+      message(FATAL_ERROR "Producer link mismatch: ${name} -> ${target}, expected ${expected_target}")
+    endif()
+  endforeach()
 endforeach()
 
 add_library(robobaton_icm42670 SHARED IMPORTED GLOBAL)
 set_target_properties(robobaton_icm42670 PROPERTIES
   IMPORTED_LOCATION "${ICM42670_REAL}"
-  IMPORTED_SONAME "libicm42670.so.2"
+  IMPORTED_SONAME "libicm42670.so.3"
   INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(robobaton_sc132 SHARED IMPORTED GLOBAL)
 set_target_properties(robobaton_sc132 PROPERTIES
   IMPORTED_LOCATION "${SC132_REAL}"
-  IMPORTED_SONAME "libsc132.so.2"
+  IMPORTED_SONAME "libsc132.so.3"
   INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(robobaton_nv12_compressed_image_transport SHARED
@@ -167,6 +191,23 @@ set_target_properties(robobaton_imu_rate_monitor PROPERTIES
 
 install(TARGETS robobaton_sensors_node robobaton_imu_rate_monitor RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(TARGETS robobaton_nv12_compressed_image_transport LIBRARY DESTINATION lib/${PROJECT_NAME})
+# Incremental installs retain only the current producer generation, without compatibility aliases.
+install(CODE [[
+  set(producer_runtime_dir "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/robobaton_4p_ros2_demo")
+  set(current_producer_names
+    libicm42670.so.3.0.0 libicm42670.so.3 libicm42670.so
+    libsc132.so.3.0.0 libsc132.so.3 libsc132.so)
+  file(GLOB installed_producers
+    "${producer_runtime_dir}/libicm42670.so" "${producer_runtime_dir}/libicm42670.so.*"
+    "${producer_runtime_dir}/libsc132.so" "${producer_runtime_dir}/libsc132.so.*")
+  foreach(installed_producer IN LISTS installed_producers)
+    get_filename_component(producer_name "${installed_producer}" NAME)
+    list(FIND current_producer_names "${producer_name}" current_producer_index)
+    if(current_producer_index EQUAL -1)
+      file(REMOVE "${installed_producer}")
+    endif()
+  endforeach()
+]])
 install(FILES
   "${ICM42670_REAL}" "${ICM42670_SONAME}" "${ICM42670_LINKER}"
   "${SC132_REAL}" "${SC132_SONAME}" "${SC132_LINKER}"

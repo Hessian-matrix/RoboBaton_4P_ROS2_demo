@@ -4,7 +4,9 @@
     <transport_descriptor>
       <transport_id>robobaton_shm</transport_id>
       <type>SHM</type>
-      <segment_size>536870912</segment_size>
+      <!-- Each participant owns a segment. Three participants reserve 768 MiB
+           plus DDS metadata, leaving room in the target's 1.5 GiB SHM budget. -->
+      <segment_size>268435456</segment_size>
       <port_queue_capacity>1024</port_queue_capacity>
     </transport_descriptor>
   </transport_descriptors>
