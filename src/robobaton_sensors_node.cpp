@@ -1,6 +1,9 @@
 #include "robobaton_4p_ros2_demo/sensor_node.hpp"
 
 #include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
@@ -25,6 +28,19 @@ extern "C" {
 #endif
 
 namespace {
+volatile sig_atomic_t g_signal_stop = 0;
+
+void RequestSignalStop(int) { g_signal_stop = 1; }
+
+void InstallStopSignalHandlers() {
+  struct sigaction action{};
+  action.sa_handler = RequestSignalStop;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGINT, &action, nullptr) != 0 ||
+      sigaction(SIGTERM, &action, nullptr) != 0)
+    throw std::system_error(errno, std::generic_category(), "install stop signal handlers");
+}
+
 // DDS transport owners inherit the creating thread's policy. Vendor pipeline
 // workers must instead inherit normal scheduling so they cannot starve ISP.
 class ScopedThreadScheduling {
@@ -155,7 +171,7 @@ void SensorNode::StartEnabledPublishers() {
   if (enable_imu_)
     imu_publisher_ = std::make_unique<ImuPublisher>(this, LoadImuConfig());
   ScopedThreadScheduling acquisition_scheduling(SCHED_OTHER, 0);
-  // Establish LPWM before anchoring the IMU FIFO/INT1 epoch.
+  // Establish LPWM before anchoring the measured IMU FIFO/TMST epoch.
   if (camera_publisher_) camera_publisher_->Start();
   if (imu_publisher_) imu_publisher_->Start();
 }
@@ -278,15 +294,22 @@ int main(int argc, char** argv) {
                 SC132_ABI_VERSION_MAJOR, SC132_ABI_VERSION_MINOR);
     return 0;
   }
-  rclcpp::init(argc, argv);
   int exit_code = 0;
   try {
+    InstallStopSignalHandlers();
+    rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
     std::shared_ptr<robobaton_4p_ros2_demo::SensorNode> node;
     {
       ScopedThreadScheduling dds_scheduling(SCHED_RR, 5);
       node = std::make_shared<robobaton_4p_ros2_demo::SensorNode>();
     }
-    rclcpp::spin(node);
+    // Signals request owner-thread cleanup while the ROS context can still
+    // publish the queued tail. Only shut down the context after node cleanup.
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(node);
+    while (!g_signal_stop && rclcpp::ok())
+      executor.spin_once(std::chrono::milliseconds(20));
+    executor.remove_node(node);
     node.reset();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "fatal: %s\n", error.what());

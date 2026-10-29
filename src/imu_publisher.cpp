@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -146,7 +147,6 @@ class ImuLifecycleCore {
       RecordFailure();
     }
     terminal_ = true;
-    admission_.store(false, std::memory_order_release);
     int stop_status = ICM42670_STATUS_OK;
     int health_status = ICM42670_STATUS_INVALID_STATE;
     if (handle_ != nullptr && start_attempted_) {
@@ -167,6 +167,9 @@ class ImuLifecycleCore {
       icm42670_destroy(handle_);
       handle_ = nullptr;
     }
+    // stop/destroy joins the acquisition owner, including callbacks already in
+    // flight. Close admission only after quiescence, then drain publication.
+    admission_.store(false, std::memory_order_release);
     FinishPublication();
     final_max_uncertainty_us_ = sample_max_uncertainty_us_;
     running_ = false;
@@ -515,14 +518,20 @@ class ImuPublisher::Impl {
     finalized_ = true;
     const bool stop_ok = core_.Stop();
     const auto health = core_.RuntimeHealth();
-    const auto publications = core_.Snapshot(SteadyNowNs());
+    // Sink success is measured only with diagnostics; producer health is a separate population.
+    char publication_count[32] = "unavailable";
+    if (config_.rate_metrics_enabled) {
+      const auto publications = core_.Snapshot(SteadyNowNs());
+      std::snprintf(publication_count, sizeof(publication_count), "%llu",
+                    static_cast<unsigned long long>(publications.publish_count));
+    }
     const bool health_valid = stop_ok && health.struct_size == sizeof(health) &&
                               health.session_generation != 0U;
     RCLCPP_INFO(node_->get_logger(),
-        "IMU_RUNTIME_HEALTH final=yes health_valid=%s session_generation=%u published_samples=%llu imu_published_samples=%llu invalid_packet_drop_count=%u gpio_event_gap_count=%u fifo_overflow_count=%u mapper_failure_count=%u uncertainty_over_200_drop_count=%u max_uncertainty_us=%u max_consecutive_timing_drop_count=%u fsync_captured=%u fsync_dropped=%u",
+        "IMU_RUNTIME_HEALTH final=yes health_valid=%s session_generation=%u published_samples=%llu imu_published_samples=%s imu_publish_count_valid=%s invalid_packet_drop_count=%u gpio_event_gap_count=%u fifo_overflow_count=%u mapper_failure_count=%u uncertainty_over_200_drop_count=%u max_uncertainty_us=%u max_consecutive_timing_drop_count=%u fsync_captured=%u fsync_dropped=%u",
         health_valid ? "yes" : "no", health.session_generation,
         static_cast<unsigned long long>(health.published_samples),
-        static_cast<unsigned long long>(publications.publish_count),
+        publication_count, config_.rate_metrics_enabled ? "yes" : "no",
         health.invalid_packet_drop_count, health.gpio_event_gap_count, health.fifo_overflow_count,
         health.mapper_failure_count, health.uncertainty_over_200_drop_count, core_.MaxUncertaintyUs(),
         health.max_consecutive_timing_drop_count,
