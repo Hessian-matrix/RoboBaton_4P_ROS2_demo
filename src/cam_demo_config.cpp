@@ -57,12 +57,21 @@ void ValidateCameraOptions(const Options& options) {
   if (options.trigger_mode != "vin_lpwm") {
     throw std::invalid_argument("camera.trigger_mode must be vin_lpwm");
   }
+  if (options.camera_timestamp_path != "observer" && options.camera_timestamp_path != "official") {
+    throw std::invalid_argument("camera_timestamp_path must be observer or official");
+  }
 }
 
-// 功能：把触发模式写入 libsc132 使用的环境变量。
-// 输入：options.trigger_mode，只接受 vin_lpwm。
-// 副作用：设置进程内环境变量 SC132_TRIGGER_MODE；触发线路由 libsc132 的板级绑定决定。
+// Configure the startup-only camera timestamp path and trigger ownership.
+// Both selectors are written before libsc132 starts; capture does not hot-swap them.
 void ConfigureSc132TriggerMode(const Options& options) {
+  if (options.camera_timestamp_path != "observer" && options.camera_timestamp_path != "official") {
+    throw std::invalid_argument("camera_timestamp_path must be observer or official");
+  }
+  if (setenv("SC132_TIMESTAMP_PATH", options.camera_timestamp_path.c_str(), 1) != 0) {
+    throw std::runtime_error("set SC132_TIMESTAMP_PATH failed");
+  }
+  std::cout << "SC132_TIMESTAMP_PATH=" << options.camera_timestamp_path << " (startup only)\n";
   if (setenv(kSc132TriggerModeEnv, options.trigger_mode.c_str(), 1) != 0) {
     throw std::runtime_error("set SC132_TRIGGER_MODE failed");
   }

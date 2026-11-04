@@ -60,7 +60,7 @@ void PublicationRateMetrics::RecordSource(uint64_t sequence, uint64_t timestamp_
   // 锁只覆盖last sequence/timestamp复合状态；publish/drop独立atomic，避免ROS发布线程和采集线程互相阻塞。
   std::lock_guard<std::mutex> lock(source_mutex_);
   const uint64_t normalized = NormalizeSequence(sequence, sequence_width_);
-  if (sequence_width_ != SequenceWidth::kNone && sequence_initialized_) {
+  if (sequence_initialized_) {
     const uint64_t expected = ExpectedNext(last_sequence_, sequence_width_);
     // 32位序号跨越最大值时normalized会变小；仅“上一值在高半区且新值在低半区”视为向前wrap。
     if (normalized == last_sequence_) {
@@ -77,19 +77,11 @@ void PublicationRateMetrics::RecordSource(uint64_t sequence, uint64_t timestamp_
       }
     }
   }
-  sequence_initialized_ = sequence_width_ != SequenceWidth::kNone;
+  sequence_initialized_ = true;
   last_sequence_ = normalized;
   RecordTimestampLocked(timestamp_ns);
 }
 
-// IMU C ABI没有sequence；只复用同一timestamp顺序锁，禁止ROS层生成无法审计的假序号。
-void PublicationRateMetrics::RecordSourceWithoutSequence(uint64_t timestamp_ns,
-                                                         uint64_t monotonic_ns) noexcept {
-  SetFirstMonotonic(monotonic_ns);
-  source_count_.fetch_add(1U, std::memory_order_relaxed);
-  std::lock_guard<std::mutex> lock(source_mutex_);
-  RecordTimestampLocked(timestamp_ns);
-}
 
 // ROS主topic成功发布后记录调用耗时；max通过CAS原子提升，热路径不引入mutex或分配。
 void PublicationRateMetrics::RecordPublishSuccess(uint64_t latency_ns) noexcept {

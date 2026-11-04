@@ -7,7 +7,6 @@
 namespace robobaton_4p_ros2_demo {
 
 enum class SequenceWidth : uint8_t {
-  kNone = 0,
   k32Bit = 32,
   k64Bit = 64,
 };
@@ -35,12 +34,9 @@ class PublicationRateMetrics {
  public:
   explicit PublicationRateMetrics(SequenceWidth sequence_width) noexcept;
 
-  // Camera使用真实sequence；timestamp和monotonic时间单位均固定为ns。
+  // Producer sequence and timestamp retain their native identity and clock.
   void RecordSource(uint64_t sequence, uint64_t timestamp_ns,
                     uint64_t monotonic_ns) noexcept;
-  // IMU公开ABI没有sequence，单独入口避免在ROS层伪造序号。
-  void RecordSourceWithoutSequence(uint64_t timestamp_ns,
-                                   uint64_t monotonic_ns) noexcept;
   void RecordPublishSuccess(uint64_t latency_ns = 0U) noexcept;
   void RecordAuxiliaryPublishSuccess() noexcept;
   void RecordDrop() noexcept;

@@ -28,6 +28,7 @@ struct Options {
   uint64_t frame_set_max_skew_ns = kDefaultFrameSetMaxSkewNs;
   uint32_t frame_set_timeout_ms = kDefaultFrameSetTimeoutMs;
   std::string trigger_mode = kDefaultSc132TriggerMode;
+  std::string camera_timestamp_path = "observer";
 };
 
 // 功能：统计相机 mask 内的启用物理相机数量。
