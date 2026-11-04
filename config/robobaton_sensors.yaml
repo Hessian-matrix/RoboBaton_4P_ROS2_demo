@@ -2,6 +2,9 @@ robobaton_sensors_node:
   ros__parameters:
     enable_camera: true
     enable_imu: true
+    # Startup-only selectors; both IMU modes use the same kernel IIO capture.
+    camera_timestamp_path: "observer"
+    imu_timestamp_mode: "host"
 
     diagnostics:
       rate_metrics_enabled: false
@@ -25,8 +28,8 @@ robobaton_sensors_node:
 
     imu:
       sample_rate_hz: 800
-      read_mode: "sensor_timestamp_fifo"
       fifo_watermark_samples: 1
-      fsync_enabled: false
+      buffer_capacity: 4096
+      sample_drop_policy: "allow_counted"
       frame_id: "robobaton_imu_link"
       publish_temperature: true

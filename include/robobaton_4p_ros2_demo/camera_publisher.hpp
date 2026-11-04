@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <functional>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -31,7 +30,6 @@ class CameraPublisher {
     bool rate_metrics_enabled = false;
     uint32_t rate_log_period_ms = 1000U;
     std::string rate_run_id;
-    std::function<void(const sc132_frame_set_t&)> fsync_group_sink;
   };
 
   // 节点统一管理生命周期；本类只封装 X5 相机采集与 ROS 发布资源。

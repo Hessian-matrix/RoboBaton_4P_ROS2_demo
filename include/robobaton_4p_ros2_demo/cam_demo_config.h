@@ -9,9 +9,8 @@ namespace robobaton_demo {
 // 异常：参数或组合不受支持时抛出std::invalid_argument。
 void ValidateCameraOptions(const Options& options);
 
-// 功能：配置 libsc132 触发输出模式。
-// 输入：options.trigger_mode，默认 vin_lpwm。
-// 副作用：设置进程内环境变量 SC132_TRIGGER_MODE，libsc132 初始化时读取。
+// Configure startup-only trigger ownership and camera timestamp selection.
+// Sets SC132_TRIGGER_MODE and SC132_TIMESTAMP_PATH before libsc132 starts.
 void ConfigureSc132TriggerMode(const Options& options);
 
 // 功能：为特定启动组合选择兼容的 sensor profile。

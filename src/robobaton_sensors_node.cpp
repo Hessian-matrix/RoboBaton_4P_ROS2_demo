@@ -16,6 +16,7 @@
 #include <string>
 #include <utility>
 
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "robobaton_4p_ros2_demo/cam_demo_common.h"
 
 extern "C" {
@@ -132,12 +133,6 @@ CameraPublisher::QueuePolicy ParseQueuePolicy(const std::string& value) {
   throw std::invalid_argument("camera.queue_policy must be block or drop_newest");
 }
 
-void RequireSensorTimestampFifoReadMode(const std::string& value) {
-  if (value == "sensor_timestamp_fifo") {
-    return;
-  }
-  throw std::invalid_argument("imu.read_mode only supports sensor_timestamp_fifo");
-}
 
 }  // namespace
 
@@ -145,21 +140,22 @@ SensorNode::SensorNode(const rclcpp::NodeOptions& options)
     : rclcpp::Node("robobaton_sensors_node", options) {
   enable_camera_ = DeclareBool(this, "enable_camera", true);
   enable_imu_ = DeclareBool(this, "enable_imu", true);
+  rcl_interfaces::msg::ParameterDescriptor startup_only;
+  startup_only.read_only = true;
+  startup_only.description = "Timestamp selection is fixed until the node restarts";
+  camera_timestamp_path_ = declare_parameter<std::string>("camera_timestamp_path", "observer", startup_only);
+  if (camera_timestamp_path_ != "observer" && camera_timestamp_path_ != "official")
+    throw std::invalid_argument("camera_timestamp_path must be observer or official");
+  const auto imu_mode = declare_parameter<std::string>("imu_timestamp_mode", "host", startup_only);
+  if (imu_mode != "host" && imu_mode != "tmst")
+    throw std::invalid_argument("imu_timestamp_mode must be host or tmst");
+  imu_timestamp_mode_ = imu_mode == "tmst" ? ICM42670_TIMESTAMP_MODE_TMST : ICM42670_TIMESTAMP_MODE_HOST;
+  RCLCPP_INFO(get_logger(), "camera_timestamp_path=%s imu_timestamp_mode=%s (startup only)",
+              camera_timestamp_path_.c_str(), imu_mode.c_str());
   // 三个诊断参数由节点统一声明，确保Camera和IMU使用同一run ID与窗口周期。
   rate_metrics_enabled_ = LoadRateMetricsEnabled();
   rate_log_period_ms_ = LoadRateLogPeriodMs();
   rate_run_id_ = LoadRateRunId();
-  fsync_enabled_ = DeclareBool(this, "imu.fsync_enabled", false);
-  if (fsync_enabled_) {
-    if (!enable_camera_ || !enable_imu_) throw std::invalid_argument("FSYNC requires camera and IMU");
-    fsync_publisher_ = create_publisher<std_msgs::msg::String>("/robobaton/fsync", rclcpp::QoS(256).reliable());
-    fsync_association_ = std::make_unique<robobaton_demo::FsyncAssociation>(
-        [](const robobaton_demo::FsyncAssociationRecord& record, void* user) {
-          auto* node = static_cast<SensorNode*>(user);
-          char json[1024]; const size_t size = robobaton_demo::FormatFsyncAssociation(record,json,sizeof(json));
-          std_msgs::msg::String message; message.data.assign(json,size); node->fsync_publisher_->publish(message);
-        }, this);
-  }
   StartEnabledPublishers();
 }
 
@@ -171,7 +167,6 @@ void SensorNode::StartEnabledPublishers() {
   if (enable_imu_)
     imu_publisher_ = std::make_unique<ImuPublisher>(this, LoadImuConfig());
   ScopedThreadScheduling acquisition_scheduling(SCHED_OTHER, 0);
-  // Establish LPWM before anchoring the measured IMU FIFO/TMST epoch.
   if (camera_publisher_) camera_publisher_->Start();
   if (imu_publisher_) imu_publisher_->Start();
 }
@@ -184,12 +179,6 @@ void SensorNode::StopPublishers() {
   if (camera_publisher_) {
     camera_publisher_->Stop();
     camera_publisher_.reset();
-  }
-  try {
-    if (fsync_association_) fsync_association_->Finish();
-  } catch (const std::exception& error) {
-    RecordProcessFailure();
-    RCLCPP_ERROR(get_logger(), "FSYNC finalization failed: %s", error.what());
   }
 }
 
@@ -225,6 +214,7 @@ std::string SensorNode::LoadRateRunId() {
 CameraPublisher::Config SensorNode::LoadCameraConfig() {
   CameraPublisher::Config config;
   auto& options = config.options;
+  options.camera_timestamp_path = camera_timestamp_path_;
   options.camera_mask =
       DeclareUint32(this, "camera.camera_mask", robobaton_demo::kDefaultCameraMask);
   options.fps = DeclareInt(this, "camera.fps", robobaton_demo::kDefaultFps);
@@ -251,12 +241,12 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
   config.rate_metrics_enabled = rate_metrics_enabled_;
   config.rate_log_period_ms = rate_log_period_ms_;
   config.rate_run_id = rate_run_id_;
-  if (fsync_enabled_) config.fsync_group_sink = [this](const sc132_frame_set_t& set) { fsync_association_->ObserveGroup(set); };
   return config;
 }
 
 ImuPublisher::Config SensorNode::LoadImuConfig() {
   ImuPublisher::Config config;
+  config.timestamp_mode = imu_timestamp_mode_;
   config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 800U);
   if (config.sample_rate_hz != 25U && config.sample_rate_hz != 50U &&
       config.sample_rate_hz != 100U && config.sample_rate_hz != 200U &&
@@ -264,22 +254,29 @@ ImuPublisher::Config SensorNode::LoadImuConfig() {
       config.sample_rate_hz != 1600U) {
     throw std::invalid_argument("imu.sample_rate_hz only supports 25, 50, 100, 200, 400, 800, or 1600");
   }
-  RequireSensorTimestampFifoReadMode(
-      DeclareString(this, "imu.read_mode", "sensor_timestamp_fifo"));
   config.fifo_watermark_samples =
       DeclareUint32(this, "imu.fifo_watermark_samples", 1U);
   if (config.fifo_watermark_samples != 1U) {
     throw std::invalid_argument("imu.fifo_watermark_samples only supports 1");
+  }
+  config.buffer_capacity = DeclareUint32(this, "imu.buffer_capacity", 4096U);
+  if (config.buffer_capacity < 256U || config.buffer_capacity > 8192U ||
+      (config.buffer_capacity & (config.buffer_capacity - 1U))) {
+    throw std::invalid_argument("imu.buffer_capacity must be a power of two in [256,8192]");
+  }
+  const auto drop_policy = DeclareString(this, "imu.sample_drop_policy", "allow_counted");
+  if (drop_policy == "allow_counted") {
+    config.sample_drop_policy = ICM42670_SAMPLE_DROP_POLICY_ALLOW_COUNTED;
+  } else if (drop_policy == "strict") {
+    config.sample_drop_policy = ICM42670_SAMPLE_DROP_POLICY_STRICT;
+  } else {
+    throw std::invalid_argument("imu.sample_drop_policy must be allow_counted or strict");
   }
   config.frame_id = DeclareString(this, "imu.frame_id", "robobaton_imu_link");
   config.publish_temperature = DeclareBool(this, "imu.publish_temperature", true);
   config.rate_metrics_enabled = rate_metrics_enabled_;
   config.rate_log_period_ms = rate_log_period_ms_;
   config.rate_run_id = rate_run_id_;
-  if (fsync_enabled_) {
-    if (config.sample_rate_hz < 800) throw std::invalid_argument("FSYNC requires 800 or 1600 Hz");
-    config.fsync_sink = [this](const icm42670_fsync_event_t& event) { fsync_association_->ObserveEvent(event); };
-  }
   return config;
 }
 

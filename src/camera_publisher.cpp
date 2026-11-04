@@ -73,7 +73,6 @@ struct CameraCoreConfig {
   std::size_t queue_capacity = 2U;
   bool drop_newest = false;
   bool rate_metrics_enabled = false;
-  std::function<void(const sc132_frame_set_t&)> fsync_group_sink;
 };
 
 class RetainedFrameJob {
@@ -388,7 +387,6 @@ class CameraLifecycleCore {
         frame_set->camera_count > kMaxCameras) {
       throw std::runtime_error("invalid frame-set header");
     }
-    if (config_.fsync_group_sink) config_.fsync_group_sink(*frame_set);
     std::array<bool, kMaxCameras> seen{};
     for (uint32_t index = 0; index < frame_set->camera_count; ++index) {
       const sc132_frame_set_item_t& item = frame_set->items[index];
@@ -793,7 +791,6 @@ class CameraPublisher::Impl {
     core_config.queue_capacity = config_.queue_capacity;
     core_config.drop_newest = config_.queue_policy == QueuePolicy::kDropNewest;
     core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
-    core_config.fsync_group_sink = config_.fsync_group_sink;
     if (!core_.Start(
             core_config,
             [this](RetainedFrameJob& job) { PublishFrame(job); },

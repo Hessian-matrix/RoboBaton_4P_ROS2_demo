@@ -8,15 +8,16 @@
 #include <rclcpp/create_timer.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/temperature.hpp>
+#include <std_msgs/msg/string.hpp>
 #endif
 
 #include "robobaton_4p_ros2_demo/icm42670_driver.h"
 #include "robobaton_4p_ros2_demo/realtime_mutex.h"
+#include "robobaton_4p_ros2_demo/imu_realtime.h"
 
 #include <array>
 #include <condition_variable>
 #include <thread>
-#include <variant>
 #include <pthread.h>
 #include <sched.h>
 #include <system_error>
@@ -43,9 +44,10 @@ namespace {
 struct ImuCoreConfig {
   uint32_t sample_rate_hz = 800U;
   uint32_t fifo_watermark_samples = 1U;
-  uint32_t read_mode = ICM42670_READ_MODE_SENSOR_TIMESTAMP_FIFO;
+  uint32_t buffer_capacity = 4096U;
+  uint32_t sample_drop_policy = ICM42670_SAMPLE_DROP_POLICY_ALLOW_COUNTED;
+  uint32_t timestamp_mode = ICM42670_TIMESTAMP_MODE_HOST;
   bool rate_metrics_enabled = false;
-  std::function<void(const icm42670_fsync_event_t&)> fsync_sink;
 };
 
 class ImuLifecycleCore {
@@ -68,13 +70,14 @@ class ImuLifecycleCore {
     sink_ = std::move(sink);
     notifier_ = std::move(notifier);
     metrics_enabled_ = config.rate_metrics_enabled;
-    fsync_sink_ = config.fsync_sink;
+    sample_drop_policy_ = config.sample_drop_policy;
 
     icm42670_config_t producer_config = ICM42670_CONFIG_INIT;
     producer_config.sample_rate_hz = config.sample_rate_hz;
     producer_config.fifo_watermark_samples = config.fifo_watermark_samples;
-    producer_config.read_mode = config.read_mode;
-    producer_config.reserved[ICM42670_CONFIG_FSYNC_ENABLE_INDEX] = fsync_sink_ ? 1U : 0U;
+    producer_config.buffer_capacity = config.buffer_capacity;
+    producer_config.sample_drop_policy = config.sample_drop_policy;
+    producer_config.timestamp_mode = config.timestamp_mode;
 
     icm42670_handle_t* candidate = nullptr;
     const int create_status = icm42670_create(&producer_config, &candidate);
@@ -97,9 +100,6 @@ class ImuLifecycleCore {
       RecordFailure();
       return false;
     }
-    if (fsync_sink_ && icm42670_set_fsync_callback(handle_, &ImuLifecycleCore::FsyncTrampoline, this) != ICM42670_STATUS_OK) {
-      icm42670_destroy(handle_); handle_ = nullptr; terminal_ = true; RecordFailure(); return false;
-    }
 
     try {
       publisher_worker_ = std::thread([this] { PublishLoop(); });
@@ -114,18 +114,18 @@ class ImuLifecycleCore {
     start_attempted_ = true;
     const int start_status = icm42670_start(handle_);
     if (start_status != ICM42670_STATUS_OK) {
-      admission_.store(false, std::memory_order_release);
       const int stop_status = icm42670_stop(handle_);
       if (stop_status != ICM42670_STATUS_OK) {
         stop_failed_.store(true, std::memory_order_release);
       }
+      CaptureFinalHealth(stop_status);
+      admission_.store(false, std::memory_order_release);
       // start 部分失败仍由唯一 owner destroy 非空 C handle。
       icm42670_destroy(handle_);
       handle_ = nullptr;
       terminal_ = true;
       RecordFailure();
       FinishPublication();
-      final_max_uncertainty_us_ = sample_max_uncertainty_us_;
       sink_ = {};
       notifier_ = {};
       return false;
@@ -137,46 +137,37 @@ class ImuLifecycleCore {
   bool Stop() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     if (terminal_ && handle_ == nullptr) {
-      return !stop_failed_.load(std::memory_order_acquire);
+      return !failed_.load(std::memory_order_acquire) &&
+             !stop_failed_.load(std::memory_order_acquire);
     }
     if (handle_ != nullptr && start_attempted_ && running_ &&
         icm42670_is_running(handle_) == 0) {
-      admission_.store(false, std::memory_order_release);
-      running_ = false;
-      terminal_ = true;
       RecordFailure();
     }
     terminal_ = true;
-    int stop_status = ICM42670_STATUS_OK;
-    int health_status = ICM42670_STATUS_INVALID_STATE;
     if (handle_ != nullptr && start_attempted_) {
-      // context 保持到 blocking stop 返回；即使 stop 失败，仍执行唯一 destroy finalizer。
-      stop_status = icm42670_stop(handle_);
-      if (stop_status == ICM42670_STATUS_OK) {
-        runtime_health_ = ICM42670_RUNTIME_HEALTH_INIT;
-        health_status = icm42670_get_runtime_health(handle_, &runtime_health_);
-        runtime_health_valid_ = health_status == ICM42670_STATUS_OK &&
-                                runtime_health_.session_generation != 0U;
-      }
-      if (stop_status != ICM42670_STATUS_OK || !runtime_health_valid_) {
-        stop_failed_.store(true, std::memory_order_release);
-        RecordFailure();
-      }
+      // Keep callback admission and the publication owner alive throughout
+      // blocking STOP, including its terminal scans and ACK processing.
+      const int stop_status = icm42670_stop(handle_);
+      CaptureFinalHealth(stop_status);
     }
+    admission_.store(false, std::memory_order_release);
     if (handle_ != nullptr) {
       icm42670_destroy(handle_);
       handle_ = nullptr;
     }
-    // stop/destroy joins the acquisition owner, including callbacks already in
-    // flight. Close admission only after quiescence, then drain publication.
-    admission_.store(false, std::memory_order_release);
     FinishPublication();
-    final_max_uncertainty_us_ = sample_max_uncertainty_us_;
+    if (runtime_health_valid_ &&
+        (runtime_health_.published_samples != admitted_samples_ ||
+         published_samples_ != admitted_samples_)) {
+      stop_failed_.store(true, std::memory_order_release);
+      RecordFailure();
+    }
     running_ = false;
     sink_ = {};
     notifier_ = {};
-    return stop_status == ICM42670_STATUS_OK && health_status == ICM42670_STATUS_OK &&
-           runtime_health_valid_;
+    return !failed_.load(std::memory_order_acquire) &&
+           !stop_failed_.load(std::memory_order_acquire);
   }
 
   bool failed() const noexcept { return failed_.load(std::memory_order_acquire); }
@@ -184,7 +175,6 @@ class ImuLifecycleCore {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!terminal_ && handle_ != nullptr && start_attempted_ && running_ &&
         icm42670_is_running(handle_) == 0) {
-      admission_.store(false, std::memory_order_release);
       running_ = false;
       terminal_ = true;
       RecordFailure();
@@ -194,32 +184,27 @@ class ImuLifecycleCore {
 
 
  private:
-  static void FsyncTrampoline(const icm42670_fsync_event_t* event, void* user) noexcept {
-    auto* owner = static_cast<ImuLifecycleCore*>(user);
-    if (!owner->admission_.load(std::memory_order_acquire)) return;
-    try {
-      if (!event || event->struct_size != sizeof(*event)) throw std::runtime_error("invalid FSYNC event");
-      owner->Enqueue(*event);
-    } catch (...) { owner->admission_.store(false); owner->RecordFailure(); }
-  }
   static void SampleTrampoline(const icm42670_sample_t* sample, void* user_data) noexcept {
     auto* owner = static_cast<ImuLifecycleCore*>(user_data);
     if (owner == nullptr || !owner->admission_.load(std::memory_order_acquire)) {
       return;
     }
     try {
-      if (sample == nullptr || sample->struct_size != sizeof(*sample)) {
+      if (sample == nullptr || sample->struct_size != sizeof(*sample) ||
+          !sample->session_generation || !sample->sample_sequence ||
+          (owner->sample_generation_ && owner->sample_generation_ != sample->session_generation)) {
         throw std::runtime_error("invalid ICM sample");
       }
-      if (sample->timestamp_uncertainty_us > owner->sample_max_uncertainty_us_)
-        owner->sample_max_uncertainty_us_ = sample->timestamp_uncertainty_us;
+      owner->sample_generation_ = sample->session_generation;
+      owner->last_sample_sequence_ = sample->sample_sequence;
       // 默认关闭时不读取clock、不进入metrics mutex/atomic；启用后在ROS sink前记录producer输入。
       if (owner->metrics_enabled_) {
         owner->metrics_.RecordSource(sample->sample_sequence,
-                                      sample->sample_timestamp_ns,
+                                      sample->sample_monotonic_ns,
                                       SteadyNowNs());
       }
       owner->Enqueue(*sample);
+      ++owner->admitted_samples_;
     } catch (...) {
       owner->admission_.store(false, std::memory_order_release);
       owner->RecordFailure();
@@ -263,17 +248,40 @@ class ImuLifecycleCore {
     return runtime_health_;
   }
 
-  uint32_t MaxUncertaintyUs() noexcept {
+  bool RuntimeHealthValid() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    return final_max_uncertainty_us_;
+    return runtime_health_valid_;
   }
 
  private:
-  // The producer copies into bounded storage only; DDS and association sinks
-  // run on a separate owner without holding the queue lock. Exhaustion is fatal.
-  using Pending = std::variant<icm42670_sample_t, icm42670_fsync_event_t>;
-  template <typename Value>
-  void Enqueue(const Value& value) {
+  void CaptureFinalHealth(int stop_status) noexcept {
+    runtime_health_ = ICM42670_RUNTIME_HEALTH_INIT;
+    const int health_status = icm42670_get_runtime_health(handle_, &runtime_health_);
+    runtime_health_valid_ = health_status == ICM42670_STATUS_OK &&
+        runtime_health_.struct_size == sizeof(runtime_health_) &&
+        runtime_health_.session_generation != 0U;
+    const auto& h = runtime_health_;
+    if (stop_status != ICM42670_STATUS_OK || !runtime_health_valid_ ||
+        h.transport_complete != 1U || h.fatal_reason || h.fatal_errno ||
+        h.fifo_overflow_count ||
+        (sample_drop_policy_ == ICM42670_SAMPLE_DROP_POLICY_STRICT && h.invalid_payload_count) ||
+        h.scan_push_failure_count || h.evidence_full_count || h.quiesce_errno ||
+        h.records_consumed != h.records_acked ||
+        h.consumed_scans < h.published_samples ||
+        h.consumed_scans - h.published_samples != h.invalid_payload_count ||
+        h.last_packet_sequence != h.consumed_scans ||
+        h.tail_packet_count > h.last_packet_sequence ||
+        h.timestamp_service_burst_count > h.records_consumed ||
+        (sample_generation_ && sample_generation_ != h.session_generation) ||
+        last_sample_sequence_ > h.last_packet_sequence) {
+      stop_failed_.store(true, std::memory_order_release);
+      RecordFailure();
+    }
+  }
+
+  // Only bounded sample copies run on the producer; DDS runs on another owner.
+  using Pending = icm42670_sample_t;
+  void Enqueue(const Pending& value) {
     {
       std::lock_guard<robobaton_demo::RealtimeMutex> lock(pending_mutex_);
       if (pending_closed_ || pending_count_ == pending_.size())
@@ -302,8 +310,8 @@ class ImuLifecycleCore {
           pending_head_ = (pending_head_ + 1U) % pending_.size();
           --pending_count_;
         }
-        if (const auto* sample = std::get_if<icm42670_sample_t>(&job)) sink_(*sample);
-        else fsync_sink_(std::get<icm42670_fsync_event_t>(job));
+        sink_(job);
+        ++published_samples_;
       }
     } catch (...) {
       admission_.store(false, std::memory_order_release);
@@ -339,7 +347,6 @@ class ImuLifecycleCore {
   bool pending_closed_ = false;
   icm42670_handle_t* handle_ = nullptr;
   Sink sink_;
-  std::function<void(const icm42670_fsync_event_t&)> fsync_sink_;
   FailureNotifier notifier_;
   std::atomic<bool> admission_{false};
   std::atomic<bool> failed_{false};
@@ -348,10 +355,12 @@ class ImuLifecycleCore {
       robobaton_4p_ros2_demo::SequenceWidth::k64Bit};
   icm42670_runtime_health_t runtime_health_ = ICM42670_RUNTIME_HEALTH_INIT;
   bool runtime_health_valid_ = false;
-  // Only the serial acquisition callback writes the running maximum. Finalize
-  // after stop/destroy joins that owner; readers only see the locked final value.
-  uint32_t sample_max_uncertainty_us_ = 0U;
-  uint32_t final_max_uncertainty_us_ = 0U;
+  // Each serial owner writes its count; STOP joins both before comparison.
+  uint64_t admitted_samples_ = 0U;
+  uint64_t published_samples_ = 0U;
+  uint32_t sample_generation_ = 0U;
+  uint64_t last_sample_sequence_ = 0U;
+  uint32_t sample_drop_policy_ = ICM42670_SAMPLE_DROP_POLICY_ALLOW_COUNTED;
   bool metrics_enabled_ = false;
   bool start_claimed_ = false;
   bool start_attempted_ = false;
@@ -384,7 +393,9 @@ bool ImuHarnessStart(void* opaque) {
   ImuCoreConfig config;
   config.sample_rate_hz = harness->config.sample_rate_hz;
   config.fifo_watermark_samples = harness->config.fifo_watermark_samples;
-  config.read_mode = harness->config.read_mode;
+  config.buffer_capacity = harness->config.buffer_capacity;
+  config.sample_drop_policy = harness->config.sample_drop_policy;
+  config.timestamp_mode = harness->config.timestamp_mode;
   config.rate_metrics_enabled = harness->config.rate_metrics_enabled;
   return harness->core.Start(
       config,
@@ -443,8 +454,8 @@ icm42670_runtime_health_t ImuHarnessRuntimeHealth(void* opaque) {
   return static_cast<ImuHarness*>(opaque)->core.RuntimeHealth();
 }
 
-uint32_t ImuHarnessMaxUncertaintyUs(void* opaque) {
-  return static_cast<ImuHarness*>(opaque)->core.MaxUncertaintyUs();
+bool ImuHarnessRuntimeHealthValid(void* opaque) {
+  return static_cast<ImuHarness*>(opaque)->core.RuntimeHealthValid();
 }
 
 }  // namespace release008_test
@@ -455,6 +466,7 @@ namespace robobaton_4p_ros2_demo {
 namespace {
 constexpr char kImuTopic[] = "/robobaton/imu/data";
 constexpr char kTemperatureTopic[] = "/robobaton/imu/temperature";
+constexpr char kTimingTopic[] = "/robobaton/imu/timing";
 
 }  // namespace
 
@@ -467,6 +479,8 @@ class ImuPublisher::Impl {
     }
     imu_pub_ = node_->create_publisher<sensor_msgs::msg::Imu>(
         kImuTopic, rclcpp::SensorDataQoS().keep_last(100));
+    timing_pub_ = node_->create_publisher<std_msgs::msg::String>(
+        kTimingTopic, rclcpp::QoS(256).reliable());
     if (config_.publish_temperature) {
       temperature_pub_ = node_->create_publisher<sensor_msgs::msg::Temperature>(
           kTemperatureTopic, rclcpp::SensorDataQoS().keep_last(10));
@@ -479,9 +493,10 @@ class ImuPublisher::Impl {
     ImuCoreConfig core_config;
     core_config.sample_rate_hz = config_.sample_rate_hz;
     core_config.fifo_watermark_samples = config_.fifo_watermark_samples;
-    core_config.read_mode = ICM42670_READ_MODE_SENSOR_TIMESTAMP_FIFO;
+    core_config.buffer_capacity = config_.buffer_capacity;
+    core_config.sample_drop_policy = config_.sample_drop_policy;
+    core_config.timestamp_mode = config_.timestamp_mode;
     core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
-    core_config.fsync_sink = config_.fsync_sink;
     if (!core_.Start(
             core_config,
             [this](const icm42670_sample_t& sample) { PublishSample(sample); },
@@ -525,18 +540,22 @@ class ImuPublisher::Impl {
       std::snprintf(publication_count, sizeof(publication_count), "%llu",
                     static_cast<unsigned long long>(publications.publish_count));
     }
-    const bool health_valid = stop_ok && health.struct_size == sizeof(health) &&
-                              health.session_generation != 0U;
+    const bool health_valid = core_.RuntimeHealthValid();
     RCLCPP_INFO(node_->get_logger(),
-        "IMU_RUNTIME_HEALTH final=yes health_valid=%s session_generation=%u published_samples=%llu imu_published_samples=%s imu_publish_count_valid=%s invalid_packet_drop_count=%u gpio_event_gap_count=%u fifo_overflow_count=%u mapper_failure_count=%u uncertainty_over_200_drop_count=%u max_uncertainty_us=%u max_consecutive_timing_drop_count=%u fsync_captured=%u fsync_dropped=%u",
-        health_valid ? "yes" : "no", health.session_generation,
+        "IMU_RUNTIME_HEALTH final=yes health_valid=%s stop_ok=%s session_generation=%u published_samples=%llu imu_published_samples=%s imu_publish_count_valid=%s consumed_scans=%llu records_consumed=%llu records_acked=%llu last_packet_sequence=%llu irq_wakeup_count=%llu timer_service_count=%llu fatal_reason=%u fatal_errno=%u fifo_overflow_count=%u invalid_payload_count=%u scan_push_failure_count=%u evidence_full_count=%u timestamp_service_burst_count=%u tail_packet_count=%u unknown_hardware_tail=%u quiesce_errno=%u transport_complete=%u",
+        health_valid ? "yes" : "no", stop_ok ? "yes" : "no", health.session_generation,
         static_cast<unsigned long long>(health.published_samples),
         publication_count, config_.rate_metrics_enabled ? "yes" : "no",
-        health.invalid_packet_drop_count, health.gpio_event_gap_count, health.fifo_overflow_count,
-        health.mapper_failure_count, health.uncertainty_over_200_drop_count, core_.MaxUncertaintyUs(),
-        health.max_consecutive_timing_drop_count,
-        health.reserved[ICM42670_HEALTH_FSYNC_CAPTURED_INDEX],
-        health.reserved[ICM42670_HEALTH_FSYNC_DROPPED_INDEX]);
+        static_cast<unsigned long long>(health.consumed_scans),
+        static_cast<unsigned long long>(health.records_consumed),
+        static_cast<unsigned long long>(health.records_acked),
+        static_cast<unsigned long long>(health.last_packet_sequence),
+        static_cast<unsigned long long>(health.irq_wakeup_count),
+        static_cast<unsigned long long>(health.timer_service_count),
+        health.fatal_reason, health.fatal_errno, health.fifo_overflow_count,
+        health.invalid_payload_count, health.scan_push_failure_count, health.evidence_full_count,
+        health.timestamp_service_burst_count, health.tail_packet_count,
+        health.unknown_hardware_tail, health.quiesce_errno, health.transport_complete);
     if (!stop_ok) {
       robobaton_4p_ros2_demo::RecordProcessFailure();
       RCLCPP_ERROR(node_->get_logger(), "ICM stop failed; handle was finalized and restart is forbidden");
@@ -585,8 +604,13 @@ class ImuPublisher::Impl {
 
   // Publication runs off the acquisition owner; DDS stalls cannot stop FIFO draining.
   void PublishSample(const icm42670_sample_t& sample) {
+    const auto output = realtime_mapper_.Map(sample);
+    char json[1536];
+    const auto size = robobaton_demo::FormatImuTiming(output, json, sizeof(json));
+    std_msgs::msg::String timing;
+    timing.data.assign(json, size);
     sensor_msgs::msg::Imu imu;
-    AssignStamp(imu.header.stamp, ToRosStampParts(sample.sample_timestamp_ns));
+    AssignStamp(imu.header.stamp, ToRosStampParts(output.realtime_ns));
     imu.header.frame_id = config_.frame_id;
     imu.orientation_covariance[0] = -1.0;
     imu.angular_velocity.x = sample.gyro_rps[0];
@@ -595,7 +619,7 @@ class ImuPublisher::Impl {
     imu.linear_acceleration.x = sample.accel_mps2[0];
     imu.linear_acceleration.y = sample.accel_mps2[1];
     imu.linear_acceleration.z = sample.accel_mps2[2];
-    // 主IMU或辅助Temperature任一publish异常都先计数再rethrow，保留callback既有fail-closed语义。
+    // Every sample also carries explicit native-clock and bridge evidence.
     try {
       if (config_.rate_metrics_enabled) {
         const uint64_t publish_start_ns = SteadyNowNs();
@@ -613,6 +637,7 @@ class ImuPublisher::Impl {
           core_.RecordAuxiliaryPublishSuccess();
         }
       }
+      timing_pub_->publish(timing);
     } catch (...) {
       core_.RecordPublishFailure();
       throw;
@@ -622,10 +647,12 @@ class ImuPublisher::Impl {
   rclcpp::Node* node_;
   Config config_;
   ImuLifecycleCore core_;
+  robobaton_demo::ImuRealtimeMapper realtime_mapper_;
   bool started_ = false;
   bool finalized_ = false;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr temperature_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr timing_pub_;
   rclcpp::TimerBase::SharedPtr rate_timer_;
   rclcpp::TimerBase::SharedPtr health_timer_;
   robobaton_4p_ros2_demo::PublicationRateSnapshot previous_snapshot_{};
