@@ -1,6 +1,6 @@
 # RoboBaton_4P_ROS2_demo
 
-[中文使用文档](https://4p-docs.readthedocs.io/zh-cn/latest/usage/ros2-demo.html) · [English documentation](https://4p-doc-en.readthedocs.io/en/latest/usage/ros2-demo.html)
+[中文使用文档](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/usage/ros2-demo.html) · [English documentation](https://4p-doc-en.readthedocs.io/en/4pv2.main/usage/ros2-demo.html)
 
 面向 X5 / ROS2 Humble 的 `ament_cmake` 示例包，发布 SC132 四目图像和 ICM-42670-P IMU 数据。V2 主分支为 `V2_main`；接线、部署、参数、topics、数据语义和排障说明统一维护在公开文档仓库 [4P_doc](https://github.com/Hessian-matrix/4P_doc/tree/V2_main)。
 
@@ -17,9 +17,9 @@
 
 ## 开始使用
 
-系统镜像下载 / System image download：[4P_V2.0.0_image.tar.gz](https://www.hessian-matrix.com/wp-content/uploads/2026/automaticupdates/4P_V2.0.0_image.tar.gz)。烧录前备份数据并核对适用硬件与发布方 SHA-256；使用预装系统无需重刷，详见[系统烧录](https://4p-docs.readthedocs.io/zh-cn/latest/ops/system-flashing.html) / [System Flashing](https://4p-doc-en.readthedocs.io/en/latest/ops/system-flashing.html)。
+系统镜像下载 / System image download：[4P_V2.0.0_image.tar.gz](https://www.hessian-matrix.com/wp-content/uploads/2026/automaticupdates/4P_V2.0.0_image.tar.gz)。烧录前备份数据并核对适用硬件与发布方 SHA-256；使用预装系统无需重刷，详见[系统烧录](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/ops/system-flashing.html) / [System Flashing](https://4p-doc-en.readthedocs.io/en/4pv2.main/ops/system-flashing.html)。
 
-匹配系统镜像已预装 `/root/ros2_demo/install` 和 `/opt/ros/humble`，无需重复安装；其他系统先按[源码编译](https://4p-docs.readthedocs.io/zh-cn/latest/development/open-source-build.html)准备 install 包，并按[部署、升级与回滚](https://4p-docs.readthedocs.io/zh-cn/latest/development/deployment-and-upgrade.html)完成部署。开机自启的 non-ROS 与 ROS2 不能同时采集，IMU-only 也需交接 owner。先等待录制收尾，在 X5 上正常停止 non-ROS：
+匹配系统镜像已预装 `/root/ros2_demo/install` 和 `/opt/ros/humble`，无需重复安装；其他系统先按[源码编译](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/development/open-source-build.html)准备 install 包，并按[部署、升级与回滚](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/development/deployment-and-upgrade.html)完成部署。开机自启的 non-ROS 与 ROS2 不能同时采集，IMU-only 也需交接 owner。先等待录制收尾，在 X5 上正常停止 non-ROS：
 
 ```bash
 cd /root/demo && ./start_sensor_demo.sh stop
@@ -33,7 +33,7 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 ```
 
-按 `Ctrl+C` 正常停止。保持 `cam-service` 运行，不与其他相机应用并发。依赖、SHM 配置、参数和订阅方法见 [ROS2 Demo 使用](https://4p-docs.readthedocs.io/zh-cn/latest/usage/ros2-demo.html)；ROS2 路径不提供 RTSP。
+按 `Ctrl+C` 正常停止。保持 `cam-service` 运行，不与其他相机应用并发。依赖、SHM 配置、参数和订阅方法见 [ROS2 Demo 使用](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/usage/ros2-demo.html)；ROS2 路径不提供 RTSP。
 
 默认 FastDDS profile 仅启用 SHM、禁用内置传输，发布与订阅限同一主机；不提供跨电脑 UDP 发现或数据传输。overlay hook 会覆盖两个默认 profile 环境变量，不能靠提前设置变量切换网络传输；跨机配置须另行确认与验证。
 
@@ -43,9 +43,9 @@ ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 
 ## 文档入口
 
-- [首次上电](https://4p-docs.readthedocs.io/zh-cn/latest/getting-started/first-boot.html) · [硬件连接与安全](https://4p-docs.readthedocs.io/zh-cn/latest/getting-started/hardware-and-safety.html)
-- [数据合同](https://4p-docs.readthedocs.io/zh-cn/latest/development/data-contracts.html) · [API 参考](https://4p-docs.readthedocs.io/zh-cn/latest/development/api-reference.html)
-- [故障排查](https://4p-docs.readthedocs.io/zh-cn/latest/troubleshooting.html)
-- [版本、已知限制与支持](https://4p-docs.readthedocs.io/zh-cn/latest/release-and-support.html)
+- [首次上电](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/getting-started/first-boot.html) · [硬件连接与安全](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/getting-started/hardware-and-safety.html)
+- [数据合同](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/development/data-contracts.html) · [API 参考](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/development/api-reference.html)
+- [故障排查](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/troubleshooting.html)
+- [版本、已知限制与支持](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/release-and-support.html)
 
 许可证及第三方组件说明见本仓库 [LICENSE](LICENSE) 和公开发布说明。
