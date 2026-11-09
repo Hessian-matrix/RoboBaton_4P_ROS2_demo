@@ -27,6 +27,7 @@ class SensorNode : public rclcpp::Node {
   bool enable_imu_ = true;
   std::string camera_timestamp_path_ = "observer";
   uint32_t imu_timestamp_mode_ = ICM42670_TIMESTAMP_MODE_HOST;
+  bool imu_fsync_diagnostics_ = true;
   bool rate_metrics_enabled_ = false;
   uint32_t rate_log_period_ms_ = 1000U;
   std::string rate_run_id_;

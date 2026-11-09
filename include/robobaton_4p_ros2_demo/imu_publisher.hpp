@@ -17,6 +17,7 @@ class ImuPublisher {
     uint32_t buffer_capacity = 4096U;
     uint32_t sample_drop_policy = ICM42670_SAMPLE_DROP_POLICY_ALLOW_COUNTED;
     uint32_t timestamp_mode = ICM42670_TIMESTAMP_MODE_HOST;
+    bool fsync_diagnostics = true;
     std::string frame_id = "robobaton_imu_link";
     bool publish_temperature = true;
     bool rate_metrics_enabled = false;

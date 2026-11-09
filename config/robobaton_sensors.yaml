@@ -28,6 +28,7 @@ robobaton_sensors_node:
 
     imu:
       sample_rate_hz: 800
+      fsync_diagnostics: true
       fifo_watermark_samples: 1
       buffer_capacity: 4096
       sample_drop_policy: "allow_counted"
