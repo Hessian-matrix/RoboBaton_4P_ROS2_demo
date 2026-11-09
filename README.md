@@ -4,7 +4,7 @@
 
 面向 X5 / ROS2 Humble 的 `ament_cmake` 示例包，发布 SC132 四目图像和 ICM-42670-P IMU 数据。接线、部署、参数、topics、数据语义和排障说明统一维护在公开文档仓库 [4P_doc](https://github.com/Hessian-matrix/4P_doc)。
 
-当前 IMU 使用内核 IIO 公共 ABI 5.0：实体 `libicm42670.so.5.0.0`、SONAME `libicm42670.so.5`，九个导出均为 `ICM42670_X5_5.0`。`host` 保留 `CLOCK_MONOTONIC` 主机估计，`tmst` 另提供映射至 `CLOCK_MONOTONIC_RAW` 的 sensor TMST；两者均保留原生 host 时间及全部 burst 证据。ROS2 在输出侧按所选原生时钟每 burst 显式桥接到 realtime，保留桥括号半宽。设备须由匹配内核预先绑定；不提供用户态 SPI、FSYNC 或自动回退。全部 consumer 必须与新头/库成套重建，不做跨 major 链接。软件版本、文档修订、ABI 与发布状态独立。
+当前 IMU 使用内核 IIO 公共 ABI 6.0：实体 `libicm42670.so.6.0.0`、SONAME `libicm42670.so.6`，九个导出均为 `ICM42670_X5_6.0`。`host` 保留 `CLOCK_MONOTONIC` 主机估计，`tmst` 另提供映射至 `CLOCK_MONOTONIC_RAW` 的 sensor TMST；两者均保留原生 host 时间及全部 burst 证据。ROS2 在输出侧按所选原生时钟每 burst 显式桥接到 realtime，保留桥括号半宽。设备须由匹配内核预先绑定；不提供用户态 SPI、触发—样本关联或自动回退。全部 consumer 必须与新头/库成套重建，不做跨 major 链接。软件版本、文档修订、ABI 与发布状态独立。 独立FSYNC诊断默认开启：YAML `imu.fsync_diagnostics: true`，`sensor_demo`／`imu_reader_demo --imu-fsync-diagnostics on|off`；ROS2启动只读参数`imu.fsync_diagnostics=true`。timing v3／MP4 IMU CSV原样保留`fifo_header,fsync_flags,fsync_sequence,fsync_raw_ns,fsync_uncertainty_ns,fsync_delta_us`；RAW沿诊断不校正正常样本／相机时间，不匹配帧。
 
 ## 仓库内容
 
@@ -27,9 +27,9 @@ ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 
 按 `Ctrl+C` 正常停止。保持 `cam-service` 运行，不与其他相机应用并发。依赖、SHM 配置、参数和订阅方法见 [ROS2 Demo 使用](https://4p-docs.readthedocs.io/zh-cn/latest/usage/ros2-demo.html)；ROS2 路径不提供 RTSP。
 
-默认 YAML `ros__parameters` 顶层提供 `camera_timestamp_path: observer|official`（默认 `observer`）和 `imu_timestamp_mode: host|tmst`（默认 `host`），最终默认组合为 HO（相机 observer + IMU host）；其余三种组合保留比较，均使用同一内核 IIO V3 采集。也可直接运行时传 `--ros-args -p camera_timestamp_path:=official -p imu_timestamp_mode:=tmst`。参数只读，修改必须停止并重启；非法值即使该传感器禁用也在硬件启动前拒绝。
+默认 YAML `ros__parameters` 顶层提供 `camera_timestamp_path: observer|official`（默认 `observer`）和 `imu_timestamp_mode: host|tmst`（默认 `host`），最终默认组合为 HO（相机 observer + IMU host）；其余三种组合保留比较，均使用同一内核 IIO V4 采集。也可直接运行时传 `--ros-args -p camera_timestamp_path:=official -p imu_timestamp_mode:=tmst`。参数只读，修改必须停止并重启；非法值即使该传感器禁用也在硬件启动前拒绝。
 
-相机 consumer 在启动前设置 `SC132_TIMESTAMP_PATH`。`observer` 使用有界 SIF MMIO observer；`official` 使用同帧 `timestamps - (tv - trig_tv)` 估计，不启动 observer，物理不确定度未知（`UINT32_MAX`），不授予有界 timing validity。两路径都输出 realtime，无失败回退。IMU host 使用 MONOTONIC 主机估计，tmst 将 RAW sample 映射到输出 realtime，两者均保留原始 MONOTONIC host 与 burst 证据；timing JSON 为 `robobaton_imu_timing_v2`，包含模式、原生时间、`fifo_tmst`、样本不确定度及所选桥时钟。host RAW sample 为零、不确定度未知；FSYNC 仍不支持。启动选择不代表已完成最终集成组成的部署或运行验收。
+相机 consumer 在启动前设置 `SC132_TIMESTAMP_PATH`。`observer` 使用有界 SIF MMIO observer；`official` 使用同帧 `timestamps - (tv - trig_tv)` 估计，不启动 observer，物理不确定度未知（`UINT32_MAX`），不授予有界 timing validity。两路径都输出 realtime，无失败回退。IMU host 使用 MONOTONIC 主机估计，tmst 将 RAW sample 映射到输出 realtime，两者均保留原始 MONOTONIC host 与 burst 证据；timing JSON 为 `robobaton_imu_timing_v3`，包含模式、原生时间、`fifo_tmst`、样本不确定度及所选桥时钟。host RAW sample 为零、不确定度未知；FSYNC 仍不支持。启动选择不代表已完成最终集成组成的部署或运行验收。
 
 ## 文档入口
 
