@@ -19,6 +19,8 @@
 
 系统镜像下载 / System image download：[4P_V2.0.0_image.tar.gz](https://www.hessian-matrix.com/wp-content/uploads/2026/automaticupdates/4P_V2.0.0_image.tar.gz)。烧录前备份数据并核对适用硬件与发布方 SHA-256；使用预装系统无需重刷，详见[系统烧录](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/ops/system-flashing.html) / [System Flashing](https://4p-doc-en.readthedocs.io/en/4pv2.main/ops/system-flashing.html)。
 
+**上方官网镜像下载保持原样，本次未更新镜像。** ABI6 应用依赖已绑定的匹配 IIO V4 模块；不按相同版本名推断旧下载已具备该模块。The official image download is unchanged; ABI6 requires the matched IIO V4 kernel module.
+
 匹配系统镜像已预装 `/root/ros2_demo/install` 和 `/opt/ros/humble`，无需重复安装；其他系统先按[源码编译](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/development/open-source-build.html)准备 install 包，并按[部署、升级与回滚](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/development/deployment-and-upgrade.html)完成部署。开机自启的 non-ROS 与 ROS2 不能同时采集，IMU-only 也需交接 owner。先等待录制收尾，在 X5 上正常停止 non-ROS：
 
 ```bash
@@ -39,7 +41,7 @@ ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 
 默认 YAML `ros__parameters` 顶层提供 `camera_timestamp_path: observer|official`（默认 `official`）和 `imu_timestamp_mode: host|tmst`（默认 `host`），当前明确使用相机 official + IMU host；全部四种组合保留，均使用同一内核 IIO V4 采集。也可直接运行时传 `--ros-args -p camera_timestamp_path:=official -p imu_timestamp_mode:=tmst`。参数只读，修改必须停止并重启，无热切换或失败回退；非法值即使该传感器禁用也在硬件启动前拒绝。
 
-相机 consumer 在启动前设置 `SC132_TIMESTAMP_PATH`。默认 `official` 使用同帧 RAW IRQ `timestamps − (tv − trig_tv) × 1000` 估计（AON 微秒 delta 转 ns），不启动 SIF MMIO observer，因此其 `500µs` 调度窗口准入不再终止默认采集。逐组 RAW→realtime 使用实际测得的桥括号，即使超过 observer 的 `200µs` 投影预算也不因宽度退出，不以当前时刻替代触发；物理不确定度未知（`UINT32_MAX`），有界 timing validity `0` 不表示图像无效或已物理同步。显式 `observer` 是诊断／精度选择，保留严格 `500µs` SIF 和 `200µs` 投影准入与失败停止。IMU host 使用 MONOTONIC 主机估计，tmst 将 RAW sample 映射到输出 realtime，两者均保留原始 MONOTONIC host 与 burst 证据；TMST `200µs` 计算合同及 IMU 输出桥不变。timing JSON 为 `robobaton_imu_timing_v3`，包含模式、原生时间、`fifo_tmst`、样本不确定度及所选桥时钟。host RAW sample 为零、不确定度未知；FSYNC 为独立诊断，不校正主时间戳。真实非法元数据、时钟读取／算术、传输、所有权及设备故障仍失败，不承诺任意负载无崩溃或持续采集。本次仅本地更新，不新增最终集成组成部署、实板运行或物理精度验收。
+相机 consumer 在启动前设置 `SC132_TIMESTAMP_PATH`。默认 `official` 使用同帧 RAW IRQ `timestamps − (tv − trig_tv) × 1000` 估计（AON 微秒 delta 转 ns），不启动 SIF MMIO observer，因此其 `500µs` 调度窗口准入不再终止默认采集。逐组 RAW→realtime 使用实际测得的桥括号，即使超过 observer 的 `200µs` 投影预算也不因宽度退出，不以当前时刻替代触发；物理不确定度未知（`UINT32_MAX`），有界 timing validity `0` 不表示图像无效或已物理同步。显式 `observer` 是诊断／精度选择，保留严格 `500µs` SIF 和 `200µs` 投影准入与失败停止。IMU host 使用 MONOTONIC 主机估计，tmst 将 RAW sample 映射到输出 realtime，两者均保留原始 MONOTONIC host 与 burst 证据；TMST `200µs` 计算合同及 IMU 输出桥不变。timing JSON 为 `robobaton_imu_timing_v3`，包含模式、原生时间、`fifo_tmst`、样本不确定度及所选桥时钟。host RAW sample 为零、不确定度未知；FSYNC 为独立诊断，不校正主时间戳。真实非法元数据、时钟读取／算术、传输、所有权及设备故障仍失败，不承诺任意负载无崩溃或持续采集。当前默认 official + host 已通过烧录后 3×60 秒四路 Image/CameraInfo、IMU/timing、速率与启停验收，4689 个 FSYNC tag 有效；见[初版运行包与验证范围](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/release-and-support.html#public-runtime-acceptance)，不外推其余三组合、跨机 DDS、全部编码路径或物理精度。
 
 ## 文档入口
 
@@ -52,7 +54,7 @@ ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 
 ## FSYNC 独立诊断
 
-ABI6 配套内核 IIO V4。`fsync_diagnostics` 只接受 `0/1`，默认 `1`；non-ROS 在 `imu.fsync_diagnostics: true|false` 或 `--imu-fsync-diagnostics on|off` 配置，ROS2 为启动时只读 bool 参数 `imu_fsync_diagnostics`。切换需正常停止并重启。独立 reader 使用 `--fsync-diagnostics on|off`，`imu_reader_demo` 使用 `--imu-fsync-diagnostics on|off`。
+ABI6 配套内核 IIO V4。`fsync_diagnostics` 只接受 `0/1`，默认 `1`；non-ROS 在 `imu.fsync_diagnostics: true|false` 或 `--imu-fsync-diagnostics on|off` 配置，ROS2 为启动时只读 bool 参数 `imu.fsync_diagnostics`。切换需正常停止并重启。独立 reader 使用 `--fsync-diagnostics on|off`，`imu_reader_demo` 使用 `--imu-fsync-diagnostics on|off`。
 
 sample 在原布局后追加六字段：`fifo_header`、`fsync_flags`、`fsync_sequence`、`fsync_raw_ns`、`fsync_uncertainty_ns`、`fsync_delta_us`。`fifo_header & 0xfc` 等于 `0x68` 时为普通包，等于 `0x6c` 时为真实 FSYNC 标记；标记包的 `fifo_tmst` 是 FSYNC delta（µs），不是绝对 sample tick。flags 位为 `1=ENABLED`、`2=TAGGED`、`4=TIME_VALID`、`8=UNRESOLVED`；普通样本事件序号为零，真实 tag 事件序号在会话内递增。没有有效边沿时必须为 `fsync_raw_ns=0`、`fsync_uncertainty_ns=UINT32_MAX`，不得将其解释为零误差。
 
