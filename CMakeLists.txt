@@ -68,8 +68,8 @@ get_filename_component(DEFAULT_ROBOBATON_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/li
 set(ROBOBATON_LIB_DIR "${DEFAULT_ROBOBATON_LIB_DIR}" CACHE PATH
   "Existing package library directory containing synchronized producers")
 
-set(ICM42670_REAL "${ROBOBATON_LIB_DIR}/libicm42670.so.5.0.0")
-set(ICM42670_SONAME "${ROBOBATON_LIB_DIR}/libicm42670.so.5")
+set(ICM42670_REAL "${ROBOBATON_LIB_DIR}/libicm42670.so.6.0.0")
+set(ICM42670_SONAME "${ROBOBATON_LIB_DIR}/libicm42670.so.6")
 set(ICM42670_LINKER "${ROBOBATON_LIB_DIR}/libicm42670.so")
 set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.3.0.0")
 set(SC132_SONAME "${ROBOBATON_LIB_DIR}/libsc132.so.3")
@@ -119,7 +119,7 @@ endforeach()
 add_library(robobaton_icm42670 SHARED IMPORTED GLOBAL)
 set_target_properties(robobaton_icm42670 PROPERTIES
   IMPORTED_LOCATION "${ICM42670_REAL}"
-  IMPORTED_SONAME "libicm42670.so.5"
+  IMPORTED_SONAME "libicm42670.so.6"
   INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(robobaton_sc132 SHARED IMPORTED GLOBAL)
@@ -196,7 +196,7 @@ install(TARGETS robobaton_nv12_compressed_image_transport LIBRARY DESTINATION li
 install(CODE [[
   set(producer_runtime_dir "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/robobaton_4p_ros2_demo")
   set(current_producer_names
-    libicm42670.so.5.0.0 libicm42670.so.5 libicm42670.so
+    libicm42670.so.6.0.0 libicm42670.so.6 libicm42670.so
     libsc132.so.3.0.0 libsc132.so.3 libsc132.so)
   file(GLOB installed_producers
     "${producer_runtime_dir}/libicm42670.so" "${producer_runtime_dir}/libicm42670.so.*"

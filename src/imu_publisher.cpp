@@ -47,6 +47,7 @@ struct ImuCoreConfig {
   uint32_t buffer_capacity = 4096U;
   uint32_t sample_drop_policy = ICM42670_SAMPLE_DROP_POLICY_ALLOW_COUNTED;
   uint32_t timestamp_mode = ICM42670_TIMESTAMP_MODE_HOST;
+  bool fsync_diagnostics = true;
   bool rate_metrics_enabled = false;
 };
 
@@ -78,6 +79,7 @@ class ImuLifecycleCore {
     producer_config.buffer_capacity = config.buffer_capacity;
     producer_config.sample_drop_policy = config.sample_drop_policy;
     producer_config.timestamp_mode = config.timestamp_mode;
+    producer_config.fsync_diagnostics = config.fsync_diagnostics ? 1U : 0U;
 
     icm42670_handle_t* candidate = nullptr;
     const int create_status = icm42670_create(&producer_config, &candidate);
@@ -396,6 +398,7 @@ bool ImuHarnessStart(void* opaque) {
   config.buffer_capacity = harness->config.buffer_capacity;
   config.sample_drop_policy = harness->config.sample_drop_policy;
   config.timestamp_mode = harness->config.timestamp_mode;
+  config.fsync_diagnostics = harness->config.fsync_diagnostics;
   config.rate_metrics_enabled = harness->config.rate_metrics_enabled;
   return harness->core.Start(
       config,
@@ -496,6 +499,7 @@ class ImuPublisher::Impl {
     core_config.buffer_capacity = config_.buffer_capacity;
     core_config.sample_drop_policy = config_.sample_drop_policy;
     core_config.timestamp_mode = config_.timestamp_mode;
+    core_config.fsync_diagnostics = config_.fsync_diagnostics;
     core_config.rate_metrics_enabled = config_.rate_metrics_enabled;
     if (!core_.Start(
             core_config,

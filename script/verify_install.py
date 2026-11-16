@@ -33,9 +33,9 @@ ROS_TRANSITIVE_RUNTIME_LIBS = (
 )
 LIBRARIES = {
     "icm42670": {
-        "names": ("libicm42670.so.5.0.0", "libicm42670.so.5", "libicm42670.so"),
-        "soname": "libicm42670.so.5",
-        "versions": ("ICM42670_X5_5.0",),
+        "names": ("libicm42670.so.6.0.0", "libicm42670.so.6", "libicm42670.so"),
+        "soname": "libicm42670.so.6",
+        "versions": ("ICM42670_X5_6.0",),
     },
     "sc132": {
         "names": ("libsc132.so.3.0.0", "libsc132.so.3", "libsc132.so"),
@@ -172,7 +172,7 @@ def required_symbol_versions(spec: dict[str, object]) -> set[str]:
 
 NODE_LIBRARY_KEYS = ("icm42670", "sc132")
 # Node needs reflect used symbols; each producer separately supplies its complete version definitions.
-NODE_REQUIRED_VERSIONS = {"ICM42670_X5_5.0", "LIBSC132_3.0"}
+NODE_REQUIRED_VERSIONS = {"ICM42670_X5_6.0", "LIBSC132_3.0"}
 PLUGIN_PLATFORM_SONAMES = {"libmultimedia.so.1", "libhbmem.so.1", "libalog.so.1"}
 
 
@@ -309,7 +309,7 @@ def verify(install_dir: Path) -> None:
             f"node version needs missing: {sorted(NODE_REQUIRED_VERSIONS - node_versions)}"
         )
     old_versions = {value for value in node_versions if value.startswith("ICM42688_") or
-                    value.startswith("ICM42670_X5_") and value != "ICM42670_X5_5.0" or
+                    value.startswith("ICM42670_X5_") and value != "ICM42670_X5_6.0" or
                     (value.endswith("_1.0") and value.startswith("LIBSC132_"))}
     if old_versions:
         raise AssertionError(f"node retains old ABI needs: {sorted(old_versions)}")

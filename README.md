@@ -4,7 +4,7 @@
 
 面向 X5 / ROS2 Humble 的 `ament_cmake` 示例包，发布 SC132 四目图像和 ICM-42670-P IMU 数据。V2 主分支为 `V2_main`；接线、部署、参数、topics、数据语义和排障说明统一维护在公开文档仓库 [4P_doc](https://github.com/Hessian-matrix/4P_doc/tree/V2_main)。
 
-当前 IMU 使用内核 IIO 公共 ABI 5.0：实体 `libicm42670.so.5.0.0`、SONAME `libicm42670.so.5`，九个导出均为 `ICM42670_X5_5.0`。`host` 保留 `CLOCK_MONOTONIC` 主机估计，`tmst` 另提供映射至 `CLOCK_MONOTONIC_RAW` 的 sensor TMST；两者均保留原生 host 时间及全部 burst 证据。ROS2 在输出侧按所选原生时钟每 burst 显式桥接到 realtime，保留桥括号半宽。设备须由匹配内核预先绑定；不提供用户态 SPI、FSYNC 或自动回退。全部 consumer 必须与新头/库成套重建，不做跨 major 链接。软件版本、文档修订、ABI 与发布状态独立。
+当前 IMU 使用内核 IIO 公共 ABI 6.0：实体 `libicm42670.so.6.0.0`、SONAME `libicm42670.so.6`，九个导出均为 `ICM42670_X5_6.0`。`host` 保留 `CLOCK_MONOTONIC` 主机估计，`tmst` 另提供映射至 `CLOCK_MONOTONIC_RAW` 的 sensor TMST；两者均保留原生 host 时间及全部 burst 证据。ROS2 在输出侧按所选原生时钟每 burst 显式桥接到 realtime，保留桥括号半宽。设备须由匹配内核预先绑定；提供独立 FSYNC 诊断，不提供用户态 SPI 或自动回退。全部 consumer 必须与新头/库成套重建，不做跨 major 链接。软件版本、文档修订、ABI 与发布状态独立。
 
 ## 仓库内容
 
@@ -37,9 +37,9 @@ ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 
 默认 FastDDS profile 仅启用 SHM、禁用内置传输，发布与订阅限同一主机；不提供跨电脑 UDP 发现或数据传输。overlay hook 会覆盖两个默认 profile 环境变量，不能靠提前设置变量切换网络传输；跨机配置须另行确认与验证。
 
-默认 YAML `ros__parameters` 顶层提供 `camera_timestamp_path: observer|official`（默认 `observer`）和 `imu_timestamp_mode: host|tmst`（默认 `host`），最终默认组合为 HO（相机 observer + IMU host）；其余三种组合保留比较，均使用同一内核 IIO V3 采集。也可直接运行时传 `--ros-args -p camera_timestamp_path:=official -p imu_timestamp_mode:=tmst`。参数只读，修改必须停止并重启；非法值即使该传感器禁用也在硬件启动前拒绝。
+默认 YAML `ros__parameters` 顶层提供 `camera_timestamp_path: observer|official`（默认 `official`）和 `imu_timestamp_mode: host|tmst`（默认 `host`），当前明确使用相机 official + IMU host；全部四种组合保留，均使用同一内核 IIO V4 采集。也可直接运行时传 `--ros-args -p camera_timestamp_path:=official -p imu_timestamp_mode:=tmst`。参数只读，修改必须停止并重启，无热切换或失败回退；非法值即使该传感器禁用也在硬件启动前拒绝。
 
-相机 consumer 在启动前设置 `SC132_TIMESTAMP_PATH`。`observer` 使用有界 SIF MMIO observer；`official` 使用同帧 `timestamps - (tv - trig_tv)` 估计，不启动 observer，物理不确定度未知（`UINT32_MAX`），不授予有界 timing validity。两路径都输出 realtime，无失败回退。IMU host 使用 MONOTONIC 主机估计，tmst 将 RAW sample 映射到输出 realtime，两者均保留原始 MONOTONIC host 与 burst 证据；timing JSON 为 `robobaton_imu_timing_v2`，包含模式、原生时间、`fifo_tmst`、样本不确定度及所选桥时钟。host RAW sample 为零、不确定度未知；FSYNC 仍不支持。启动选择不代表已完成最终集成组成的部署或运行验收。
+相机 consumer 在启动前设置 `SC132_TIMESTAMP_PATH`。默认 `official` 使用同帧 RAW IRQ `timestamps − (tv − trig_tv) × 1000` 估计（AON 微秒 delta 转 ns），不启动 SIF MMIO observer，因此其 `500µs` 调度窗口准入不再终止默认采集。逐组 RAW→realtime 使用实际测得的桥括号，即使超过 observer 的 `200µs` 投影预算也不因宽度退出，不以当前时刻替代触发；物理不确定度未知（`UINT32_MAX`），有界 timing validity `0` 不表示图像无效或已物理同步。显式 `observer` 是诊断／精度选择，保留严格 `500µs` SIF 和 `200µs` 投影准入与失败停止。IMU host 使用 MONOTONIC 主机估计，tmst 将 RAW sample 映射到输出 realtime，两者均保留原始 MONOTONIC host 与 burst 证据；TMST `200µs` 计算合同及 IMU 输出桥不变。timing JSON 为 `robobaton_imu_timing_v3`，包含模式、原生时间、`fifo_tmst`、样本不确定度及所选桥时钟。host RAW sample 为零、不确定度未知；FSYNC 为独立诊断，不校正主时间戳。真实非法元数据、时钟读取／算术、传输、所有权及设备故障仍失败，不承诺任意负载无崩溃或持续采集。本次仅本地更新，不新增最终集成组成部署、实板运行或物理精度验收。
 
 ## 文档入口
 
@@ -49,3 +49,11 @@ ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 - [版本、已知限制与支持](https://4p-docs.readthedocs.io/zh-cn/4pv2.main/release-and-support.html)
 
 许可证及第三方组件说明见本仓库 [LICENSE](LICENSE) 和公开发布说明。
+
+## FSYNC 独立诊断
+
+ABI6 配套内核 IIO V4。`fsync_diagnostics` 只接受 `0/1`，默认 `1`；non-ROS 在 `imu.fsync_diagnostics: true|false` 或 `--imu-fsync-diagnostics on|off` 配置，ROS2 为启动时只读 bool 参数 `imu_fsync_diagnostics`。切换需正常停止并重启。独立 reader 使用 `--fsync-diagnostics on|off`，`imu_reader_demo` 使用 `--imu-fsync-diagnostics on|off`。
+
+sample 在原布局后追加六字段：`fifo_header`、`fsync_flags`、`fsync_sequence`、`fsync_raw_ns`、`fsync_uncertainty_ns`、`fsync_delta_us`。`fifo_header & 0xfc` 等于 `0x68` 时为普通包，等于 `0x6c` 时为真实 FSYNC 标记；标记包的 `fifo_tmst` 是 FSYNC delta（µs），不是绝对 sample tick。flags 位为 `1=ENABLED`、`2=TAGGED`、`4=TIME_VALID`、`8=UNRESOLVED`；普通样本事件序号为零，真实 tag 事件序号在会话内递增。没有有效边沿时必须为 `fsync_raw_ns=0`、`fsync_uncertainty_ns=UINT32_MAX`，不得将其解释为零误差。
+
+`fsync_raw_ns` 是独立 RAW 域边沿诊断，未用于改写 host 主时间戳或自动匹配相机帧。替换掉的绝对 tick 由实际左右端点重建，名义 ODR 只提供允许区间。host 模式的诊断映射失败会保留未解析 tag 并继续正常采集；tmst 模式仍要求有效映射并在失败时停止。bag/ROS2 的 `robobaton_imu_timing_v3` 与 MP4 `imu.csv` 保留六字段，不新增独立 FSYNC 文件。此合同不认证逐帧无长尾、LPWM 波形修复或物理同步 ≤1 ms。

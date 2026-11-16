@@ -143,13 +143,14 @@ SensorNode::SensorNode(const rclcpp::NodeOptions& options)
   rcl_interfaces::msg::ParameterDescriptor startup_only;
   startup_only.read_only = true;
   startup_only.description = "Timestamp selection is fixed until the node restarts";
-  camera_timestamp_path_ = declare_parameter<std::string>("camera_timestamp_path", "observer", startup_only);
+  camera_timestamp_path_ = declare_parameter<std::string>("camera_timestamp_path", "official", startup_only);
   if (camera_timestamp_path_ != "observer" && camera_timestamp_path_ != "official")
     throw std::invalid_argument("camera_timestamp_path must be observer or official");
   const auto imu_mode = declare_parameter<std::string>("imu_timestamp_mode", "host", startup_only);
   if (imu_mode != "host" && imu_mode != "tmst")
     throw std::invalid_argument("imu_timestamp_mode must be host or tmst");
   imu_timestamp_mode_ = imu_mode == "tmst" ? ICM42670_TIMESTAMP_MODE_TMST : ICM42670_TIMESTAMP_MODE_HOST;
+  imu_fsync_diagnostics_ = declare_parameter<bool>("imu.fsync_diagnostics", true, startup_only);
   RCLCPP_INFO(get_logger(), "camera_timestamp_path=%s imu_timestamp_mode=%s (startup only)",
               camera_timestamp_path_.c_str(), imu_mode.c_str());
   // 三个诊断参数由节点统一声明，确保Camera和IMU使用同一run ID与窗口周期。
@@ -247,6 +248,7 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
 ImuPublisher::Config SensorNode::LoadImuConfig() {
   ImuPublisher::Config config;
   config.timestamp_mode = imu_timestamp_mode_;
+  config.fsync_diagnostics = imu_fsync_diagnostics_;
   config.sample_rate_hz = DeclareUint32(this, "imu.sample_rate_hz", 800U);
   if (config.sample_rate_hz != 25U && config.sample_rate_hz != 50U &&
       config.sample_rate_hz != 100U && config.sample_rate_hz != 200U &&
