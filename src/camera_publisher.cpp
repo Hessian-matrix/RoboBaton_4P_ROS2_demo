@@ -668,10 +668,6 @@ namespace {
 constexpr char kImageTopicSuffix[] = "/image_raw";
 constexpr char kCameraInfoTopicSuffix[] = "/camera_info";
 
-bool Sc132TimestampsAreMonotonicRaw(const robobaton_demo::Options& options) noexcept {
-  return options.trigger_mode == "software_gpio" || options.trigger_mode == "gpio";
-}
-
 const SensorTimestampMapper& RequireTimestampMapper(const SensorTimestampMapper* mapper) {
   if (mapper == nullptr) {
     throw std::invalid_argument("camera publisher requires a timestamp mapper");
@@ -874,11 +870,8 @@ class CameraPublisher::Impl {
   }
 
   RosStampParts HeaderStampFromFrame(const sc132_frame_info_t& info) const {
-    if (Sc132TimestampsAreMonotonicRaw(config_.options)) {
-      return ToRosStampParts(
-          timestamp_mapper_.MapMonotonicRawToRealtimeNs(info.timestamp_ns));
-    }
-    return ToRosStampParts(info.timestamp_ns);
+    return ToRosStampParts(
+        timestamp_mapper_.MapMonotonicRawToRealtimeNs(info.timestamp_ns));
   }
 
   void PublishFrame(const RetainedFrameJob& job) {
@@ -892,7 +885,8 @@ class CameraPublisher::Impl {
     if (camera_id >= kMaxCameras || !image_publishers_[camera_id]) {
       throw std::runtime_error("invalid SC132 camera id");
     }
-    sensor_msgs::msg::Image image;
+    // Each camera has one worker; publish(const&) finishes reading before buffer reuse.
+    auto& image = image_buffers_[camera_id];
     AssignStamp(image.header.stamp, HeaderStampFromFrame(info));
     image.header.frame_id = CameraFrameId(config_.frame_id_prefix, camera_id);
     image.height = info.height;
@@ -942,6 +936,7 @@ class CameraPublisher::Impl {
   CameraLifecycleCore& core_;
   bool started_ = false;
   std::array<image_transport::Publisher, kMaxCameras> image_publishers_{};
+  std::array<sensor_msgs::msg::Image, kMaxCameras> image_buffers_;
   std::array<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr, kMaxCameras>
       camera_info_publishers_{};
   rclcpp::TimerBase::SharedPtr rate_timer_;

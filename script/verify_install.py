@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -30,14 +31,21 @@ ROS_TRANSITIVE_RUNTIME_LIBS = (
     "libssl.so", "libssl.so.3", "libcrypto.so", "libcrypto.so.3",
     "libblas.so.3", "liblapack.so.3", "libgfortran.so.5",
 )
+ROS_RUNTIME_LINKS = {
+    "libconsole_bridge.so": "libconsole_bridge.so.1.0",
+    "libspdlog.so": "libspdlog.so.1", "libspdlog.so.1": "libspdlog.so.1.9.2",
+    "libfmt.so": "libfmt.so.8", "libfmt.so.8": "libfmt.so.8.1.1",
+    "libtinyxml2.so": "libtinyxml2.so.9", "libtinyxml2.so.9": "libtinyxml2.so.9.0.0",
+    "libssl.so": "libssl.so.3", "libcrypto.so": "libcrypto.so.3",
+}
 LIBRARIES = {
     "icm42688": {
-        "names": ("libicm42688.so.2.1.1", "libicm42688.so.2", "libicm42688.so"),
+        "names": ("libicm42688.so.2.1.2", "libicm42688.so.2", "libicm42688.so"),
         "soname": "libicm42688.so.2",
         "versions": ("ICM42688_X5_2.0", "ICM42688_X5_2.1"),
     },
     "sc132": {
-        "names": ("libsc132.so.2.0.1", "libsc132.so.2", "libsc132.so"),
+        "names": ("libsc132.so.2.0.2", "libsc132.so.2", "libsc132.so"),
         "soname": "libsc132.so.2",
         "versions": ("LIBSC132_2.0",),
     },
@@ -82,6 +90,85 @@ def dynamic_symbols(path: Path) -> set[str]:
 def runpath(path: Path) -> str:
     match = re.search(r"Library runpath: \[([^\]]*)\]", readelf(path, "-d", "--wide"))
     return match.group(1) if match else ""
+
+
+def normalize_generated_setup(install_dir: Path) -> None:
+    """Remove only the four known Humble/colcon POSIX build-prefix fallbacks."""
+    package_dir = f"share/{PACKAGE}"
+    colcon_prefix = '"${COLCON_CURRENT_PREFIX:-}"'
+    specifications = (
+        ("setup.sh", "colcon_core/shell/template/prefix_chain.sh.em",
+         "_colcon_prefix_chain_sh_COLCON_CURRENT_PREFIX=", colcon_prefix),
+        ("local_setup.sh", "colcon_core/shell/template/prefix.sh.em",
+         "_colcon_prefix_sh_COLCON_CURRENT_PREFIX=", colcon_prefix),
+        (f"{package_dir}/package.sh", "colcon_core/shell/template/package.sh.em",
+         "_colcon_package_sh_COLCON_CURRENT_PREFIX=", colcon_prefix),
+        (f"{package_dir}/local_setup.sh", "ament_package/template/package_level/local_setup.sh.in",
+         ': ${AMENT_CURRENT_PREFIX:=', '"${COLCON_CURRENT_PREFIX:-}"}'),
+    )
+    changes: list[tuple[Path, str]] = []
+    for name, generator, assignment, replacement in specifications:
+        path = install_dir / name
+        if not path.is_file() or path.is_symlink():
+            raise AssertionError(f"missing regular generated setup: {name}")
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        if not lines or lines[0] != f"# generated from {generator}\n":
+            raise AssertionError(f"unexpected setup generator: {name}")
+        candidates = [index for index, line in enumerate(lines) if line.startswith(assignment)]
+        if len(candidates) != 1:
+            raise AssertionError(f"unexpected generated prefix assignment: {name}")
+        index = candidates[0]
+        portable = f"{assignment}{replacement}\n"
+        if lines[index] == portable:
+            continue
+        original = lines[index][len(assignment):].strip()
+        if assignment.startswith(":"):
+            if not original.endswith("}"):
+                raise AssertionError(f"unexpected ament prefix fallback: {name}")
+            original = original[:-1]
+        if original not in (str(install_dir), f'"{install_dir}"', f"'{install_dir}'"):
+            raise AssertionError(f"unexpected generated build prefix: {name}: {original!r}")
+        lines[index] = portable
+        if assignment.startswith(":"):
+            lines.insert(index + 1,
+                         'if [ -z "$AMENT_CURRENT_PREFIX" ]; then\n'
+                         '  echo "Set AMENT_CURRENT_PREFIX or COLCON_CURRENT_PREFIX before sourcing local_setup.sh." 1>&2\n'
+                         '  return 1\nfi\n')
+        changes.append((path, "".join(lines)))
+    # Validate every generator before touching any file; .dsv resources are unchanged.
+    for path, text in changes:
+        path.write_text(text, encoding="utf-8")
+
+
+def verify_portable_paths(install_dir: Path, build_prefixes: tuple[str, ...] = ()) -> None:
+    marker = install_dir / "share/ament_index/resource_index/parent_prefix_path" / PACKAGE
+    if marker.exists() or marker.is_symlink():
+        if marker.is_symlink() or not marker.is_file():
+            raise AssertionError("parent prefix marker must be a regular file")
+        prefixes = marker.read_text(encoding="utf-8").strip().split(";")
+        if any(prefix not in ("", "{prefix}", "/opt/ros/humble") for prefix in prefixes):
+            raise AssertionError("parent prefix marker retains a build-only ROS underlay")
+    private_workspace = re.compile(rb"/root/(?:x5|4cam_candidates)/")
+    generated_prefix = re.compile(
+        rb'(?m)^_colcon_(?:prefix_chain|prefix|package)_sh_COLCON_CURRENT_PREFIX=["\x27]?/'
+        rb'|^: \$\{AMENT_CURRENT_PREFIX:=["\x27]?/')
+    forbidden = tuple(value.encode("utf-8") for value in build_prefixes if value)
+    overlap = max([64, *(len(value) for value in forbidden)]) - 1
+    for path in sorted(install_dir.rglob("*")):
+        if path.is_symlink():
+            target = os.fsencode(os.readlink(path))
+            if private_workspace.search(target) or any(value in target for value in forbidden):
+                raise AssertionError(f"private/build path in symlink: {path.relative_to(install_dir)}")
+        elif path.is_file():
+            with path.open("rb") as stream:
+                previous = b""
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    data = previous + block
+                    if (private_workspace.search(data) or generated_prefix.search(data)
+                            or any(value in data for value in forbidden)):
+                        raise AssertionError(f"private/build path in install file: {path.relative_to(install_dir)}")
+                    previous = data[-overlap:]
 
 
 def verify_relocatable_bash_setup(install_dir: Path) -> None:
@@ -182,7 +269,32 @@ def artifact_names() -> list[str]:
     return sorted(names)
 
 
+def verify_library_links(runtime_dir: Path) -> None:
+    lexical = runtime_dir.absolute()
+    if any(parent.is_symlink() for parent in (lexical, *lexical.parents)) or not runtime_dir.is_dir():
+        raise AssertionError(f"runtime library directory must be real: {runtime_dir}")
+    expected_links = dict(ROS_RUNTIME_LINKS)
+    for spec in LIBRARIES.values():
+        real, soname_name, linker = spec["names"]
+        expected_links.update({soname_name: real, linker: soname_name})
+    for path in runtime_dir.rglob("*"):
+        if path.is_symlink():
+            relative = path.relative_to(runtime_dir).as_posix()
+            if relative not in expected_links or os.readlink(path) != expected_links[relative]:
+                raise AssertionError(f"unexpected runtime symlink: {relative}")
+    for spec in LIBRARIES.values():
+        real, soname_name, linker = spec["names"]
+        real_path = runtime_dir / real
+        if not real_path.is_file() or real_path.is_symlink():
+            raise AssertionError(f"real ELF must be a regular file: {real}")
+        for name, target in ((soname_name, real), (linker, soname_name)):
+            path = runtime_dir / name
+            if not path.is_symlink() or os.readlink(path) != target:
+                raise AssertionError(f"library symlink must be {name} -> {target}")
+
+
 def write_manifest(runtime_dir: Path) -> None:
+    verify_library_links(runtime_dir)
     lines = [f"{sha256(runtime_dir / name)}  {name}" for name in artifact_names()]
     (runtime_dir / MANIFEST).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -230,8 +342,10 @@ def verify_executable(runtime_dir: Path, install_dir: Path, name: str) -> Path:
     return executable
 
 
-def verify(install_dir: Path) -> None:
+def verify(install_dir: Path, build_prefixes: tuple[str, ...] = ()) -> None:
     runtime_dir = install_dir / "lib" / PACKAGE
+    verify_portable_paths(install_dir, build_prefixes)
+    verify_library_links(runtime_dir)
     version_file = install_dir / "share" / PACKAGE / "VERSION"
     if not version_file.is_file() or version_file.read_text(encoding="utf-8").strip() != RELEASE_VERSION:
         raise AssertionError(f"missing or invalid ROS2 release VERSION: {version_file}")
@@ -281,14 +395,7 @@ def verify(install_dir: Path) -> None:
         raise AssertionError(f"plugin RUNPATH is not package-relative: {plugin_runpath!r}")
 
     for library, spec in LIBRARIES.items():
-        paths = [runtime_dir / name for name in spec["names"]]
-        for path in paths:
-            if not path.is_file():
-                raise AssertionError(f"missing {library} package entry: {path}")
-        hashes = {sha256(path) for path in paths}
-        if len(hashes) != 1:
-            raise AssertionError(f"{library} version chain bytes differ: {sorted(hashes)}")
-        real = paths[0]
+        real = runtime_dir / spec["names"][0]
         if soname(real) != spec["soname"]:
             raise AssertionError(f"{library} SONAME mismatch: {soname(real)!r}")
         missing_versions = required_symbol_versions(spec) - versions(real)
@@ -305,12 +412,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("install_dir", type=Path)
     parser.add_argument("--write-manifest", action="store_true")
+    parser.add_argument("--normalize-generated-setup", action="store_true",
+                        help="Remove known generated POSIX build-prefix fallbacks before verification")
+    parser.add_argument("--build-prefix", action="append", default=[],
+                        help="Additional build-only prefix forbidden anywhere in the install")
     args = parser.parse_args()
-    install_dir = args.install_dir.resolve()
+    install_dir = args.install_dir.absolute()
     runtime_dir = install_dir / "lib" / PACKAGE
+    if args.normalize_generated_setup:
+        normalize_generated_setup(install_dir)
     if args.write_manifest:
+        verify_portable_paths(install_dir, tuple(args.build_prefix))
         write_manifest(runtime_dir)
-    verify(install_dir)
+    verify(install_dir, tuple(args.build_prefix))
     print(f"ROS2 ABI-v2 install verified: {install_dir}")
     return 0
 

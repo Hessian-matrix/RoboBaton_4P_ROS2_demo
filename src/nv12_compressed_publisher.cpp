@@ -8,6 +8,7 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <hb_media_codec.h>
+#include "x5_jpeg_output.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -96,18 +97,6 @@ Nv12Planes ValidateAndLocatePlanes(const sensor_msgs::msg::Image& image) {
           static_cast<int>(image.height), static_cast<int>(image.step), chroma_height};
 }
 
-std::size_t FindJpegEnd(const unsigned char* data, std::size_t capacity) {
-  if (data == nullptr || capacity < 4U || data[0] != 0xFFU || data[1] != 0xD8U) {
-    throw std::runtime_error("X5 JPEG output is missing SOI marker");
-  }
-  for (std::size_t index = capacity; index >= 2U; --index) {
-    if (data[index - 2U] == 0xFFU && data[index - 1U] == 0xD9U) {
-      return index;
-    }
-  }
-  throw std::runtime_error("X5 JPEG output is missing EOI marker");
-}
-
 class X5Nv12JpegEncoder final {
  public:
   explicit X5Nv12JpegEncoder(int jpeg_quality) : jpeg_quality_(jpeg_quality) {
@@ -122,11 +111,11 @@ class X5Nv12JpegEncoder final {
 
   std::vector<uint8_t> Encode(const sensor_msgs::msg::Image& image) {
     const Nv12Planes planes = ValidateAndLocatePlanes(image);
-    EnsureContext(planes.width, planes.height);
     media_codec_buffer_t input{};
     media_codec_buffer_t output{};
     media_codec_output_buffer_info_t output_info{};
     try {
+      EnsureContext(planes.width, planes.height);
       CheckCodec(hb_mm_mc_dequeue_input_buffer(&context_, &input, kCodecTimeoutMs),
                  "dequeue JPEG input buffer");
       CopyIntoCodecInput(planes, &input);
@@ -135,10 +124,8 @@ class X5Nv12JpegEncoder final {
       CheckCodec(hb_mm_mc_dequeue_output_buffer(
                      &context_, &output, &output_info, kCodecTimeoutMs),
                  "dequeue JPEG output buffer");
-      const std::size_t jpeg_size = FindJpegEnd(
+      std::vector<uint8_t> jpeg = detail::CopyJpegForInterchange(
           output.vstream_buf.vir_ptr, static_cast<std::size_t>(output.vstream_buf.size));
-      std::vector<uint8_t> jpeg(output.vstream_buf.vir_ptr,
-                                output.vstream_buf.vir_ptr + jpeg_size);
       CheckCodec(hb_mm_mc_queue_output_buffer(&context_, &output, kCodecTimeoutMs),
                  "queue JPEG output buffer");
       return jpeg;
@@ -215,15 +202,25 @@ class X5Nv12JpegEncoder final {
       throw std::runtime_error("X5 JPEG input buffer capacity is too small");
     }
 
-    for (int row = 0; row < planes.height; ++row) {
-      std::memcpy(input->vframe_buf.vir_ptr[0] + static_cast<std::size_t>(row) * y_stride,
-                  planes.y_data + static_cast<std::size_t>(row) * planes.source_stride,
-                  static_cast<std::size_t>(planes.width));
+    if (y_stride == planes.width && planes.source_stride == planes.width) {
+      std::memcpy(input->vframe_buf.vir_ptr[0], planes.y_data,
+                  static_cast<std::size_t>(planes.width) * planes.height);
+    } else {
+      for (int row = 0; row < planes.height; ++row) {
+        std::memcpy(input->vframe_buf.vir_ptr[0] + static_cast<std::size_t>(row) * y_stride,
+                    planes.y_data + static_cast<std::size_t>(row) * planes.source_stride,
+                    static_cast<std::size_t>(planes.width));
+      }
     }
-    for (std::size_t row = 0U; row < planes.chroma_height; ++row) {
-      std::memcpy(input->vframe_buf.vir_ptr[1] + row * static_cast<std::size_t>(uv_stride),
-                  planes.uv_data + row * static_cast<std::size_t>(planes.source_stride),
-                  static_cast<std::size_t>(planes.width));
+    if (uv_stride == planes.width && planes.source_stride == planes.width) {
+      std::memcpy(input->vframe_buf.vir_ptr[1], planes.uv_data,
+                  static_cast<std::size_t>(planes.width) * planes.chroma_height);
+    } else {
+      for (std::size_t row = 0U; row < planes.chroma_height; ++row) {
+        std::memcpy(input->vframe_buf.vir_ptr[1] + row * static_cast<std::size_t>(uv_stride),
+                    planes.uv_data + row * static_cast<std::size_t>(planes.source_stride),
+                    static_cast<std::size_t>(planes.width));
+      }
     }
     const uint64_t compact_size =
         static_cast<uint64_t>(planes.width) * static_cast<uint64_t>(planes.height) * 3U / 2U;

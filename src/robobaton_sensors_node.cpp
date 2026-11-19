@@ -109,6 +109,11 @@ SensorNode::SensorNode(const rclcpp::NodeOptions& options)
     : rclcpp::Node("robobaton_sensors_node", options) {
   enable_camera_ = DeclareBool(this, "enable_camera", true);
   enable_imu_ = DeclareBool(this, "enable_imu", true);
+  // Trigger admission applies even when cameras are disabled, before either hardware owner starts.
+  if (DeclareString(this, "camera.trigger_mode", robobaton_demo::kDefaultSc132TriggerMode) !=
+      robobaton_demo::kDefaultSc132TriggerMode) {
+    throw std::invalid_argument("camera.trigger_mode must be software_gpio");
+  }
   // 三个诊断参数由节点统一声明，确保Camera和IMU使用同一run ID与窗口周期。
   rate_metrics_enabled_ = LoadRateMetricsEnabled();
   rate_log_period_ms_ = LoadRateLogPeriodMs();
@@ -119,24 +124,25 @@ SensorNode::SensorNode(const rclcpp::NodeOptions& options)
 SensorNode::~SensorNode() { StopPublishers(); }
 
 void SensorNode::StartEnabledPublishers() {
-  if (enable_imu_) {
-    imu_publisher_ = std::make_unique<ImuPublisher>(this, LoadImuConfig());
-    imu_publisher_->Start();
-  }
+  // Camera startup completes vendor initialization before the IMU timing epoch begins.
   if (enable_camera_) {
     camera_publisher_ = std::make_unique<CameraPublisher>(this, LoadCameraConfig());
     camera_publisher_->Start();
   }
+  if (enable_imu_) {
+    imu_publisher_ = std::make_unique<ImuPublisher>(this, LoadImuConfig());
+    imu_publisher_->Start();
+  }
 }
 
 void SensorNode::StopPublishers() {
-  if (camera_publisher_) {
-    camera_publisher_->Stop();
-    camera_publisher_.reset();
-  }
   if (imu_publisher_) {
     imu_publisher_->Stop();
     imu_publisher_.reset();
+  }
+  if (camera_publisher_) {
+    camera_publisher_->Stop();
+    camera_publisher_.reset();
   }
 }
 
@@ -182,8 +188,7 @@ CameraPublisher::Config SensorNode::LoadCameraConfig() {
       this, "camera.frame_set_max_skew_ns", robobaton_demo::kDefaultFrameSetMaxSkewNs);
   options.frame_set_timeout_ms = DeclareUint32(
       this, "camera.frame_set_timeout_ms", robobaton_demo::kDefaultFrameSetTimeoutMs);
-  options.trigger_mode =
-      DeclareString(this, "camera.trigger_mode", robobaton_demo::kDefaultSc132TriggerMode);
+  options.trigger_mode = get_parameter("camera.trigger_mode").as_string();
   config.queue_capacity = DeclareSize(this, "camera.queue_capacity", 4U);
   config.queue_policy =
       ParseQueuePolicy(DeclareString(this, "camera.queue_policy", "block"));

@@ -38,6 +38,10 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 
 版本查询不会初始化 ROS graph、相机或 IMU。产品版本、ABI 和发布组合见 [产品版本与兼容性](https://4p-docs.readthedocs.io/zh-cn/latest/getting-started/product-and-compatibility.html)、[API 参考](https://4p-docs.readthedocs.io/zh-cn/latest/development/api-reference.html) 和 [版本更新记录](https://4p-docs.readthedocs.io/zh-cn/latest/changelog.html)。
 
+当前 `1.3.4` 候选构建使用 `libicm42688.so.2.1.2` 和 `libsc132.so.2.0.2`；SONAME 仍为 `libicm42688.so.2`、`libsc132.so.2`，ABI 不变。软件 `VERSION`、`package.xml` 与版本接口报告 `1.3.4`；请同时核验真实库文件名和 `abi_manifest.sha256`。正式发布状态见文档站的发布与支持页面。
+
+源码 `lib/` 和 install 的 `lib/robobaton_4p_ros2_demo/` 每库只有一份真实 ELF，另有 `.so -> .so.2 -> 具体版本文件` 两级同目录相对链接。构建与 `script/verify_install.py` 严格检查链接类型和目标；`abi_manifest.sha256` 继续包含别名的内容哈希。使用 tar、`cp -a` 或 `rsync -a` 保留链接，不能只用哈希相等代替链接校验。
+
 ## 构建
 
 构建前需要：
@@ -73,6 +77,12 @@ source /root/ros2_demo/install/robobaton_ros2_env.bash
 ros2 launch robobaton_4p_ros2_demo robobaton_sensors.launch.py
 ```
 
+环境脚本通过已安装的 ament hook 补充 `/usr/hobot/lib` 与 `/usr/hobot/lib/sensor`（目录存在时），用于解析 X5 媒体库的 `libalog.so.1` 等传递依赖；无需手工追加 `LD_LIBRARY_PATH`。FastDDS 继续使用安装包的 SHM profile，不切换到 UDP。
+
+相机与 IMU 同时启用时，先完成相机初始化，再建立 IMU 采样时间域；正常停止时先停 IMU，再回收相机，避免相机初始化/销毁与 IMU 采样重叠。只启用一种传感器时不启动另一种。
+
+默认 FastDDS SHM segment 为每 participant `256 MiB`，不是所有进程共享一个配额。节点、随包提供的 IMU monitor、订阅程序和 CLI/daemon 都可能各创建 participant；并发启动前用 `--check` 确认 `/dev/shm` 可用空间覆盖各 segment、端口和管理开销。四个 participant 仅 segment 合计约 `1 GiB`；不要在已有进程运行时清理 SHM 文件。
+
 只运行 IMU：
 
 ```bash
@@ -94,7 +104,9 @@ ros2 run robobaton_4p_ros2_demo robobaton_imu_rate_monitor
 - `camera.rotate_degrees=180` 只支持 `30fps`；其他公开帧率使用 `180` 会被拒绝。
 - raw 图像为 NV12；compressed 使用 X5 硬件 JPEG；ROS2 路径不提供 RTSP。
 - IMU 支持 `25/50/100/200/500/1000/2000Hz`，默认 `1000Hz`，使用 sensor-timestamp FIFO。
-- 默认 trigger 为 `software_gpio`；不提供TF、外参、相机标定或可用的 IMU orientation。
+- `camera.trigger_mode` 只接受默认值 `software_gpio`，使用 GPIO417 软件触发；其他值在访问硬件前被拒绝，无别名或回退。不提供TF、外参、相机标定或可用的 IMU orientation。
+- compressed JPEG 仅移除 X5 JPU 紧随 SOI 的私有 APP9 帧序号，保留其他 metadata、编码表和图像 scan 字节，兼容通用 JPEG 解码器。
+- 每路 worker 复用自己的 raw Image 存储；`publish(const&)` 返回后才覆盖。JPEG 输入无行 padding 时整块拷贝，否则逐行拷贝有效像素，不改变 NV12 布局、QoS 或硬件 JPEG 质量。
 - `CameraInfo` 只有当前帧宽高，标定字段为空；完整时间戳和 buffer 语义见数据合同。
 
 ## 详细文档

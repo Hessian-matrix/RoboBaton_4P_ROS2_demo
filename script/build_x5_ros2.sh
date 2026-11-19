@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PKG_NAME="robobaton_4p_ros2_demo"
 
-X5_CROSS_ROOT="${X5_CROSS_ROOT:-/root/x5/cross_compile/new}"
+X5_CROSS_ROOT="${X5_CROSS_ROOT:-${X5_NEW_ROOT:-}}"
 CROSS_ENV_SCRIPT="${CROSS_ENV_SCRIPT:-}"
 TOOLCHAIN_FILE="${TOOLCHAIN_FILE:-}"
 BUILD_ROOT="${BUILD_ROOT:-${PKG_DIR}/1.ros2_build}"
@@ -26,7 +26,7 @@ Usage:
 
 Options:
   --clean                         Remove selected build/install/log roots before building.
-  --cross-root <path>             X5 cross bundle root, default /root/x5/cross_compile/new.
+  --cross-root <path>             X5 cross bundle root (or set X5_CROSS_ROOT/X5_NEW_ROOT).
   --cross-env <path>              Cross environment script.
   --toolchain-file <path>         X5 CMake toolchain file.
   --robobaton-lib-dir <path>      Existing in-package ABI-v2 producer directory, default ./lib.
@@ -40,7 +40,7 @@ Options:
   -h, --help                      Show this help.
 
 No module-root variables are required. Upstream producer builds must synchronize
-libicm42688.so.2.1.1/.2/unversioned and libsc132.so.2.0.1/.2/unversioned into ./lib.
+libicm42688.so.2.1.2/.2/unversioned and libsc132.so.2.0.2/.2/unversioned into ./lib.
 USAGE
 }
 
@@ -90,6 +90,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "${X5_CROSS_ROOT}" ]]; then
+  echo "Set X5_CROSS_ROOT/X5_NEW_ROOT or pass --cross-root <bundle>/cross_compile/new." >&2
+  exit 2
+fi
 X5_CROSS_ROOT="$(resolve_project_path "${X5_CROSS_ROOT}")"
 CROSS_ENV_SCRIPT="$(resolve_project_path "${CROSS_ENV_SCRIPT:-${X5_CROSS_ROOT}/scripts/setup_x5_cross_env.sh}")"
 TOOLCHAIN_FILE="$(resolve_project_path "${TOOLCHAIN_FILE:-${X5_CROSS_ROOT}/toolchain/aarch64_x5_host_toolchain.cmake}")"
@@ -105,10 +109,10 @@ TOOLCHAIN_FILE="$(resolve_existing_file "${TOOLCHAIN_FILE}")"
 ROBOBATON_LIB_DIR="$(resolve_existing_dir "${ROBOBATON_LIB_DIR}")"
 
 for required_file in \
-  "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.1" \
+  "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.2" \
   "${ROBOBATON_LIB_DIR}/libicm42688.so.2" \
   "${ROBOBATON_LIB_DIR}/libicm42688.so" \
-  "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.1" \
+  "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.2" \
   "${ROBOBATON_LIB_DIR}/libsc132.so.2" \
   "${ROBOBATON_LIB_DIR}/libsc132.so"; do
   [[ -e "${required_file}" ]] || { echo "Missing required producer artifact: ${required_file}" >&2; exit 2; }
@@ -140,6 +144,8 @@ TOOLCHAIN_FILE="${selected_toolchain_file}"
 export CMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}"
 : "${TARGET_ROS_PREFIX:?Cross environment must set TARGET_ROS_PREFIX}"
 : "${SYSROOT_ROOT:?Cross environment must set SYSROOT_ROOT}"
+TARGET_ROS_PREFIX="$(resolve_existing_dir "${TARGET_ROS_PREFIX}")"
+SYSROOT_ROOT="$(resolve_existing_dir "${SYSROOT_ROOT}")"
 for ros_package in ament_cmake rclcpp sensor_msgs rcl_interfaces image_transport pluginlib; do
   [[ -f "${TARGET_ROS_PREFIX}/share/${ros_package}/cmake/${ros_package}Config.cmake" ]] || {
     echo "Missing target ROS package: ${ros_package} in ${TARGET_ROS_PREFIX}" >&2
@@ -177,7 +183,12 @@ env -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH -u CMAKE_PREFIX_PATH colcon "${co
 node_path="${INSTALL_BASE}/lib/${PKG_NAME}/robobaton_sensors_node"
 [[ -x "${node_path}" ]] || { echo "Build finished but expected node is missing: ${node_path}" >&2; exit 3; }
 file "${node_path}"
-python3 "${PKG_DIR}/script/verify_install.py" --write-manifest "${INSTALL_BASE}"
+python3 "${PKG_DIR}/script/verify_install.py" \
+  --normalize-generated-setup --write-manifest \
+  --build-prefix "${PKG_DIR}" --build-prefix "${BUILD_BASE}" \
+  --build-prefix "${INSTALL_BASE}" \
+  --build-prefix "${X5_CROSS_ROOT}" --build-prefix "${TARGET_ROS_PREFIX}" \
+  --build-prefix "${SYSROOT_ROOT}" "${INSTALL_BASE}"
 chmod 644 "${INSTALL_BASE}/lib/${PKG_NAME}/abi_manifest.sha256"
 printf '[build_x5_ros2] PASS install=%s\n' "${INSTALL_BASE}"
 printf '[build_x5_ros2] deploy/source on target: source %s/robobaton_ros2_env.bash\n' "${INSTALL_BASE}"

@@ -26,6 +26,20 @@ if(X5_BUILD_AMENT_PREFIX_PATH)
   set(ENV{AMENT_PREFIX_PATH} "${X5_BUILD_AMENT_PREFIX_PATH}")
 endif()
 
+# File/macro/debug paths use public labels, including paths from inline ROS headers.
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
+  message(FATAL_ERROR "Portable builds require a compiler supporting -ffile-prefix-map")
+endif()
+add_compile_options(
+  "-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=."
+  "-ffile-prefix-map=${CMAKE_CURRENT_BINARY_DIR}=./build")
+foreach(target_ros_prefix IN LISTS X5_BUILD_AMENT_PREFIX_PATH)
+  add_compile_options("-ffile-prefix-map=${target_ros_prefix}=./target_ros/humble")
+endforeach()
+if(CMAKE_SYSROOT)
+  add_compile_options("-ffile-prefix-map=${CMAKE_SYSROOT}=./sysroot")
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -67,10 +81,10 @@ get_filename_component(DEFAULT_ROBOBATON_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/li
 set(ROBOBATON_LIB_DIR "${DEFAULT_ROBOBATON_LIB_DIR}" CACHE PATH
   "Existing package library directory containing synchronized ABI-v2 producers")
 
-set(ICM42688_REAL "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.1")
+set(ICM42688_REAL "${ROBOBATON_LIB_DIR}/libicm42688.so.2.1.2")
 set(ICM42688_SONAME "${ROBOBATON_LIB_DIR}/libicm42688.so.2")
 set(ICM42688_LINKER "${ROBOBATON_LIB_DIR}/libicm42688.so")
-set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.1")
+set(SC132_REAL "${ROBOBATON_LIB_DIR}/libsc132.so.2.0.2")
 set(SC132_SONAME "${ROBOBATON_LIB_DIR}/libsc132.so.2")
 set(SC132_LINKER "${ROBOBATON_LIB_DIR}/libsc132.so")
 
@@ -83,11 +97,35 @@ foreach(required_path
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cam_demo_config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/robobaton_4p_ros2_demo/timestamp_mapper.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/timestamp_mapper.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/x5_jpeg_output.hpp"
     "${ICM42688_REAL}" "${ICM42688_SONAME}" "${ICM42688_LINKER}"
     "${SC132_REAL}" "${SC132_SONAME}" "${SC132_LINKER}")
   if(NOT EXISTS "${required_path}")
     message(FATAL_ERROR "Missing required RoboBaton ABI-v2 artifact: ${required_path}")
   endif()
+endforeach()
+
+if(IS_SYMLINK "${ROBOBATON_LIB_DIR}")
+  message(FATAL_ERROR "Producer library directory must not be a symlink")
+endif()
+foreach(producer ICM42688 SC132)
+  if(IS_SYMLINK "${${producer}_REAL}")
+    message(FATAL_ERROR "Real producer ELF must be a regular file: ${${producer}_REAL}")
+  endif()
+  foreach(alias SONAME LINKER)
+    if(NOT IS_SYMLINK "${${producer}_${alias}}")
+      message(FATAL_ERROR "Required producer symlink missing: ${${producer}_${alias}}")
+    endif()
+    file(READ_SYMLINK "${${producer}_${alias}}" link_target)
+    if(alias STREQUAL "SONAME")
+      get_filename_component(expected_target "${${producer}_REAL}" NAME)
+    else()
+      get_filename_component(expected_target "${${producer}_SONAME}" NAME)
+    endif()
+    if(NOT link_target STREQUAL expected_target)
+      message(FATAL_ERROR "Invalid producer symlink: ${${producer}_${alias}} -> ${link_target}")
+    endif()
+  endforeach()
 endforeach()
 
 add_library(robobaton_icm42688 SHARED IMPORTED GLOBAL)
@@ -215,4 +253,8 @@ install(PROGRAMS script/robobaton_ros2_env.bash DESTINATION .)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 install(FILES VERSION DESTINATION share/${PROJECT_NAME})
 
+# Target ROS discovery is build-only; the runtime helper selects /opt/ros/humble.
+if(X5_BUILD_AMENT_PREFIX_PATH)
+  unset(ENV{AMENT_PREFIX_PATH})
+endif()
 ament_package()

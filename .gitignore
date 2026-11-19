@@ -1,6 +1,20 @@
-# 本地构建和测试输出。
+# Reproducible CMake/colcon/temp trees; lib/ remains public.
 build/
+build_x5/
+build_x5_*/
+cmake-build-*/
+.*-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
 log/
 install/
 1.ros2_build/
-*.pyc
+
+# Local Python/tool caches.
+.cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
